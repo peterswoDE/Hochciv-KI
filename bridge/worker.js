@@ -51,6 +51,7 @@ const armiesOf = konst('armiesOf');
 const FEAT = require('./features').makeFeatures(E, konst);
 
 /* ------------------------------------------------------------------ games */
+const MAX_TURN_STEPS = 60;
 const games = new Map();   // gid -> { S, agents: Set<pi>, turn: per-turn KI context or null }
 
 function mulberry(seed) {
@@ -154,7 +155,7 @@ function turnCtx(g) {
   const S = g.S, pi = S.cur;
   if (!g.turn || g.turn.pi !== pi || g.turn.round !== S.round) {
     E.kiSeedRng(S, pi);
-    g.turn = { pi, round: S.round, K: E.kiContext(S, pi), memo: {}, failed: new Set(), cands: null };
+    g.turn = { pi, round: S.round, K: E.kiContext(S, pi), memo: {}, failed: new Set(), cands: null, steps: 0 };
   }
   return g.turn;
 }
@@ -188,6 +189,8 @@ function step(g, i) {
   if (military) {   // same bookkeeping as kiPlan: armies with a task stay where they are
     for (const a of armiesOf(S, pi)) if (before.get(a.id) !== a.r + ',' + a.c) t.memo.committed.add(a.id);
   }
+  // like kiPlan, at most MAX_TURN_STEPS actions per turn – then the turn ends by itself
+  if (++t.steps >= MAX_TURN_STEPS && !S.over) return Object.assign(endAgentTurn(g), { tag: c.tag, forcedEnd: true });
   return { tag: c.tag };
 }
 
