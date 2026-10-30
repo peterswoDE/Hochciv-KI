@@ -1,0 +1,4 @@
+# PyTorch with CUDA 12.8 (needed for the RTX 50 series):
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+torch>=2.7
+numpy
