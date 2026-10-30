@@ -22,6 +22,9 @@ GRID_SCALE = np.array([1] * 8 + [3] * 3 + [1] * 4 + [5] * 4 + [1] + [1] * 4 + [4
                       dtype=np.float32)
 
 
+LOGIT_CAP = 15.0
+
+
 def grid_to_u8(grid: np.ndarray) -> np.ndarray:
     """Quantize to uint8 and crop to the map (rows/columns with any terrain)."""
     g = np.clip(np.rint(grid * GRID_SCALE[:, None, None]), 0, 255).astype(np.uint8)
@@ -78,8 +81,8 @@ class Net(nn.Module):
         self.mix = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(d, heads, 2 * d, dropout=0.0, batch_first=True), layers,
             enable_nested_tensor=False)
-        self.logit = nn.Sequential(nn.Linear(2 * d, d), nn.ReLU(), nn.Linear(d, 1))
-        self.value = nn.Sequential(nn.Linear(d, d), nn.ReLU(), nn.Linear(d, 1))
+        self.logit = nn.Sequential(nn.LayerNorm(2 * d), nn.Linear(2 * d, d), nn.ReLU(), nn.Linear(d, 1))
+        self.value = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, d), nn.ReLU(), nn.Linear(d, 1))
 
     def forward(self, grid_u8, glob, cand, pos, mask):
         """grid_u8 [B,C,H,W] uint8, glob [B,G], cand [B,N,F], pos [B,N,2] long, mask [B,N] bool
@@ -106,6 +109,8 @@ class Net(nn.Module):
         h = self.cand(torch.cat([cand, at], -1)) + s.unsqueeze(1)
         h = self.mix(h, src_key_padding_mask=~mask)
         logits = self.logit(torch.cat([h, s.unsqueeze(1).expand_as(h)], -1)).squeeze(-1)
+        # soft cap: BC drove the logits up without bound (accurate but wildly overconfident)
+        logits = LOGIT_CAP * torch.tanh(logits.float() / LOGIT_CAP)
         logits = logits.masked_fill(~mask, float("-inf"))
         return logits, self.value(s).squeeze(-1)
 

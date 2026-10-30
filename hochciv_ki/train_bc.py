@@ -21,31 +21,37 @@ from .model import Net, collate, load_net, save_net
 class Dataset:
     """All shards of the given directories in memory (grids as uint8, cropped to the map)."""
 
-    def __init__(self, dirs):
+    def __init__(self, dirs, keep=1.0, seed=0):
+        """keep: share of the samples to load (memory), drawn at random per shard."""
         self.grid, self.glob, self.cand, self.pos, self.label, self.z = [], [], [], [], [], []
+        self.rng = np.random.default_rng(seed)
         for d in dirs:
             for f in sorted(Path(d).glob("shard_*.npz")):
-                self._load(f)
+                self._load(f, keep)
         self.n = len(self.label)
 
-    def _load(self, f):
+    def _load(self, f, keep):
         z = np.load(f)
         lens, shapes = z["lens"], z["gshape"]
+        take = self.rng.random(len(lens)) < keep
         C = 32
         # candidates and seat vectors stay float16 in memory (converted per batch in collate)
         grid, cand, pos = z["grid"], z["cand"], z["pos"]
         go = co = 0
+        glob, label, zz = z["glob"], z["label"], z["z"]
         for i in range(len(lens)):
             h, w = int(shapes[i][0]), int(shapes[i][1])
-            self.grid.append(grid[go:go + C * h * w].reshape(C, h, w))
-            go += C * h * w
             n = int(lens[i])
-            self.cand.append(cand[co:co + n])
-            self.pos.append(pos[co:co + n])
+            if take[i]:
+                # copies, so that the skipped samples' shard arrays can be freed
+                self.grid.append(grid[go:go + C * h * w].reshape(C, h, w).copy())
+                self.cand.append(cand[co:co + n].copy())
+                self.pos.append(pos[co:co + n].copy())
+                self.glob.append(glob[i].copy())
+                self.label.append(int(label[i]))
+                self.z.append(float(zz[i]))
+            go += C * h * w
             co += n
-        self.glob.extend(z["glob"])
-        self.label.extend(z["label"].tolist())
-        self.z.extend(z["z"].tolist())
 
     def batches(self, idx, batch, device, shuffle=True, prefetch=4):
         """Yields collated batches; collation runs in a background thread."""
@@ -101,13 +107,14 @@ def main():
     ap.add_argument("--init", default=None, help="continue from a checkpoint")
     ap.add_argument("--epochs", type=int, default=8)
     ap.add_argument("--batch", type=int, default=256)
-    ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--val", type=float, default=0.05)
+    ap.add_argument("--keep", type=float, default=1.0, help="share of the samples to load")
     args = ap.parse_args()
     device = "cuda"
     torch.backends.cudnn.benchmark = True
     t0 = time.perf_counter()
-    data = Dataset(args.data)
+    data = Dataset(args.data, args.keep)
     print(f"{data.n} samples loaded in {time.perf_counter() - t0:.0f}s", flush=True)
     rng = np.random.default_rng(0)
     perm = rng.permutation(data.n)
@@ -133,7 +140,7 @@ def main():
         def zero_grad(s, **k): s.o.zero_grad(**k)
         def step(s): s.o.step(); sched.step()
 
-    best = -1
+    best = float("inf")
     for ep in range(args.epochs):
         t = time.perf_counter()
         tr = run_epoch(net, data, train_idx, Stepper(opt), device, args.batch, train=True)
@@ -142,8 +149,9 @@ def main():
               f"train acc {tr['acc']:.3f} pol {tr['policy']:.3f} val {tr['value']:.3f} | "
               f"val acc {va['acc']:.3f} pol {va['policy']:.3f} val {va['value']:.3f}", flush=True)
         save_net(net, out / "latest.pt", epoch=ep + 1, val=va)
-        if va["acc"] > best:
-            best = va["acc"]
+        # by validation policy loss: accuracy alone rewarded overconfident networks
+        if va["policy"] < best:
+            best = va["policy"]
             save_net(net, out / "best.pt", epoch=ep + 1, val=va)
 
 
