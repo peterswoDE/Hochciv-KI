@@ -78,6 +78,9 @@ def run_epoch(net, data, idx, opt, device, batch, train=True, vweight=0.5):
             lp = F.cross_entropy(logits, label)
             lv = F.binary_cross_entropy_with_logits(v.float(), z)
             loss = lp + vweight * lv
+            if not torch.isfinite(loss):
+                print("skipping a batch with a non-finite loss", flush=True)
+                continue
             if train:
                 opt.zero_grad(set_to_none=True)
                 loss.backward()

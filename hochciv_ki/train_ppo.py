@@ -84,9 +84,9 @@ class PPO:
 
     def update(self, batch, epochs, mb, device, imit):
         """batch: list of (sample, a, logp_old, adv, ret, teacher)."""
-        # eval mode: BatchNorm keeps the statistics the rollout used, so the probability
-        # ratio starts at 1 (in train mode the batch statistics shift every logit)
-        self.net.eval()
+        # the network has no batch-dependent layers (ChannelNorm, no dropout): train and eval
+        # mode compute the same, so the probability ratio starts at 1
+        self.net.train()
         adv = np.array([b[3] for b in batch], np.float32)
         adv = (adv - adv.mean()) / (adv.std() + 1e-6)
         stats = {"pol": 0.0, "val": 0.0, "ent": 0.0, "imit": 0.0, "kl": 0.0, "clipfrac": 0.0, "n": 0}

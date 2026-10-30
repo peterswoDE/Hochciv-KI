@@ -31,13 +31,31 @@ def grid_to_u8(grid: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(g[:, :h, :w])
 
 
+def symlog(x):
+    """sign(x) * log(1 + |x|): keeps one-hots and small values readable, tames the rare huge
+    deltas (a candidate that ends the game changes the KI's value by thousands)."""
+    return torch.sign(x) * torch.log1p(x.abs())
+
+
+class ChannelNorm(nn.Module):
+    """LayerNorm over the channels of every cell. Unlike BatchNorm it depends neither on the
+    batch nor on the padding, so training, evaluation and PPO rollouts compute the same."""
+
+    def __init__(self, ch):
+        super().__init__()
+        self.ln = nn.LayerNorm(ch)
+
+    def forward(self, x):
+        return self.ln(x.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+
+
 class ResBlock(nn.Module):
     def __init__(self, ch):
         super().__init__()
         self.c1 = nn.Conv2d(ch, ch, 3, padding=1, bias=False)
-        self.b1 = nn.BatchNorm2d(ch)
+        self.b1 = ChannelNorm(ch)
         self.c2 = nn.Conv2d(ch, ch, 3, padding=1, bias=False)
-        self.b2 = nn.BatchNorm2d(ch)
+        self.b2 = ChannelNorm(ch)
 
     def forward(self, x, m):
         y = F.relu(self.b1(self.c1(x))) * m
@@ -52,7 +70,7 @@ class Net(nn.Module):
         self.cfg = dict(ch=ch, blocks=blocks, d=d, layers=layers, heads=heads)
         C, G, CF = dims["GRID_C"], dims["GLOB_N"], dims["CAND_F"]
         self.register_buffer("gscale", torch.tensor(GRID_SCALE[:C]))
-        self.stem = nn.Sequential(nn.Conv2d(C, ch, 3, padding=1, bias=False), nn.BatchNorm2d(ch), nn.ReLU())
+        self.stem = nn.Sequential(nn.Conv2d(C, ch, 3, padding=1, bias=False), ChannelNorm(ch), nn.ReLU())
         self.tower = nn.ModuleList([ResBlock(ch) for _ in range(blocks)])
         self.glob = nn.Sequential(nn.Linear(G, d), nn.ReLU(), nn.Linear(d, d), nn.ReLU())
         self.state = nn.Sequential(nn.Linear(2 * ch + d, d), nn.ReLU(), nn.Linear(d, d), nn.ReLU())
@@ -67,6 +85,7 @@ class Net(nn.Module):
         """grid_u8 [B,C,H,W] uint8, glob [B,G], cand [B,N,F], pos [B,N,2] long, mask [B,N] bool
         (True = real candidate). Returns logits [B,N] (-inf on padding) and value logits [B]."""
         B, C, H, W = grid_u8.shape
+        glob, cand = symlog(glob), symlog(cand)
         g = grid_u8.float() / self.gscale.view(1, C, 1, 1)
         valid = g[:, C - 1:C]                                   # last plane: playable cell
         # cells of the map (any terrain plane, "Kein Feld" included); the rest is batch padding,

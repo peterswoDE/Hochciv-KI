@@ -220,6 +220,8 @@ function makeFeatures(E, konst) {
     out[i++] = ev.win ? 1 : 0;
     out[i++] = ev.lose ? 1 : 0;
     out[i++] = (ev.v - base) / 50;
+    // stored as float16 on disk: keep every value in its range
+    for (let k = o; k < o + CAND_F; k++) out[k] = Math.max(-30000, Math.min(30000, out[k]));
   }
 
   /* Evaluate the candidate list `cands` (kiCandidates entries) for player pi.
