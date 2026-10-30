@@ -48,6 +48,7 @@ const VERSION = konst('APP_VERSION');
 const CIVS = konst('CIVS');
 const CIV_BY_KEY = Object.fromEntries(CIVS.map(c => [c.k, c]));
 const armiesOf = konst('armiesOf');
+const FEAT = require('./features').makeFeatures(E, konst);
 
 /* ------------------------------------------------------------------ games */
 const games = new Map();   // gid -> { S, agents: Set<pi>, turn: per-turn KI context or null }
@@ -78,7 +79,7 @@ function makePlayers(seats, seed, distinct) {
     const abilities = CIV_BY_KEY[civ].abilities || [{ k: 'basis' }];
     const ability = s.ability || abilities[Math.floor(rnd() * abilities.length)].k;
     const p = { civ, ability, kind: s.kind === 'agent' ? 'human' : s.kind, diff: s.diff || 'prinz' };
-    if (s.kind === 'ki') p.kiLevel = s.kiLevel || 'schwer';
+    if (s.kind !== 'bot') p.kiLevel = s.kiLevel || 'schwer';
     return p;
   });
 }
@@ -116,6 +117,9 @@ function reset(a) {
   const S = E.newGame(cfg);
   // newGame sorts into turn order and keeps the seat as `slot`
   const agents = new Set(S.players.map((p, i) => [p, i]).filter(([p]) => p.kind === 'human').map(([, i]) => i));
+  /* newGame keeps kiLevel only for KI seats. Agent seats need it too: the KI context (threat,
+     strike plans), the teacher and kiTurn read it, and would fall back to KI_DEFAULT_LEVEL. */
+  for (const pi of agents) S.players[pi].kiLevel = players[S.players[pi].slot].kiLevel;
   const gid = a.gid ?? (games.size ? Math.max(...games.keys()) + 1 : 1);
   const g = { S, agents, turn: null };
   games.set(gid, g);
@@ -197,7 +201,29 @@ function endAgentTurn(g) {
   return { tag: 'end' };
 }
 
-/* Let the JS KI play the whole current turn of an agent seat (baseline; imitation comes in M1). */
+/* Observation of the agent on turn: every candidate is tried on a copy (features.js), failing
+   ones are dropped, and the following step() indexes into this filtered list. With
+   `grid: false` the map planes are left out (they only change after an action). */
+const b64 = arr => Buffer.from(arr.buffer, arr.byteOffset, arr.byteLength).toString('base64');
+function observe(g, wantGrid = true) {
+  const S = g.S, pi = S.cur;
+  if (S.over || !g.agents.has(pi)) throw new Error('no agent on turn');
+  const t = turnCtx(g);
+  E.kiStepMemo(t.memo, S, pi);
+  const all = E.kiCandidates(S, pi, t.K, t.memo, false).filter(c => !t.failed.has(c.tag));
+  const ev = FEAT.evaluate(S, pi, t, all);
+  t.cands = ev.keep.map(j => all[j]);
+  const tags = t.cands.map(c => c.tag);
+  const { cand, pos } = FEAT.encodeCands(S, pi, tags, ev);
+  const out = {
+    pi, round: S.round, tags: tags.concat(['end']), teacher: ev.teacher,
+    glob: b64(FEAT.glob(S, pi)), cand: b64(cand), pos: b64(pos),
+  };
+  if (wantGrid) out.grid = b64(FEAT.grid(S, pi));
+  return out;
+}
+
+/* Let the JS KI play the whole current turn of an agent seat (baseline). */
 function kiTurnFull(g) {
   const S = g.S, pi = S.cur;
   E.kiTurn(S, pi);
@@ -208,7 +234,8 @@ function kiTurnFull(g) {
 
 /* ------------------------------------------------------------------ protocol */
 const handlers = {
-  info: () => ({ version: VERSION, engineDir: ENGINE_DIR, civs: CIVS.map(c => c.k) }),
+  info: () => ({ version: VERSION, engineDir: ENGINE_DIR, civs: CIVS.map(c => c.k), dims: FEAT.dims }),
+  observe: a => observe(game(a), a.grid !== false),
   reset: a => reset(a),
   candidates: a => ({ cands: candidates(game(a)) }),
   step: a => Object.assign(step(game(a), a.i), status(game(a))),
