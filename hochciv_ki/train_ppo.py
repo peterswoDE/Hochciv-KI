@@ -29,9 +29,9 @@ from .infer import InferenceServer, ServerAgent
 from .model import collate, load_net, save_net
 from .pool import BridgePool
 
-MAPS = {"2": ["plaettchen", "plaettchen", "plaettchen", "original", "gross"],
-        "3": ["plaettchen", "plaettchen", "gross"],
-        "4": ["plaettchen", "plaettchen", "original", "gross"]}
+MAPS = {"2": ["plaettchen", "plaettchen", "plaettchen", "original", "gross", "customgen"],
+        "3": ["plaettchen", "plaettchen", "gross", "customgen"],
+        "4": ["plaettchen", "plaettchen", "original", "gross", "customgen"]}
 
 # (weight, seats) – L: learner (records), S: snapshot, ki:*, bot:*
 MIXES = {

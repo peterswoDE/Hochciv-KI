@@ -7,7 +7,8 @@
    take next (one step of kiPlan at level "schwer"), or "end" when nothing is worth it.
 
    Layout (all float32, sent base64-encoded):
-     grid   [GRID_C, GRID_H, GRID_W]  map planes, seats relative to the observer
+     grid   [GRID_C, h, w]            map planes as big as the map (custom maps up to 48 × 48),
+                                      seats relative to the observer
      glob   [GLOB_N]                  game and per-seat vectors
      cand   [n, CAND_F]               one row per candidate, the last row is "end"
      pos    [n, 2] int32              target cell of a candidate (r, c) or (-1, -1)
@@ -15,7 +16,7 @@
    the rest share the last slot.                                                            */
 'use strict';
 
-const GRID_H = 24, GRID_W = 40, NSEAT = 4;
+const NSEAT = 4;
 const TERRAINS = ['G', 'W', 'B', 'F', 'M', 'I', 'V', 'X'];
 const CAND_TYPES = ['tech', 'free', 'back', 'pick', 'copyf', 'copyp', 'gfree', 'grow', 'found',
   'road1', 'road2', 'slave', 'col', 'wonder', 'power', 'strike', 'defend', 'flank', 'end'];
@@ -57,7 +58,9 @@ function makeFeatures(E, konst) {
   };
 
   function grid(S, me) {
+    const GRID_H = S.map.rows.length, GRID_W = Math.max(...S.map.rows.map(r => r.length));
     const out = new Float32Array(GRID_C * GRID_H * GRID_W);
+    out.h = GRID_H; out.w = GRID_W;
     const at = (ch, r, c) => (ch * GRID_H + r) * GRID_W + c;
     const slot = slotOf(S, me);
     const rows = S.map.rows;
@@ -274,8 +277,8 @@ function makeFeatures(E, konst) {
 
   return {
     grid, glob, evaluate, encodeCands,
-    dims: { GRID_C, GRID_H, GRID_W, GLOB_N, CAND_F, NSEAT, NT, CAND_TYPES, TECH_KEYS },
+    dims: { GRID_C, GLOB_N, CAND_F, NSEAT, NT, CAND_TYPES, TECH_KEYS },
   };
 }
 
-module.exports = { makeFeatures, GRID_H, GRID_W, NSEAT, CAND_TYPES };
+module.exports = { makeFeatures, NSEAT, CAND_TYPES };

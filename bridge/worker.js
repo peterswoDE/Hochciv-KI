@@ -85,12 +85,51 @@ function makePlayers(seats, seed, distinct) {
   });
 }
 
+/* A random custom map (as the map editor would store one) for `n` empires: land masses from
+   smoothed noise, the land types in about the shares of the tile maps, start points spread
+   out. Training on these keeps the network from learning only the built-in maps. */
+function genCustomMap(seed, n) {
+  const rnd = mulberry(seed ^ 0x2545F491);
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const H = 8 + Math.floor(rnd() * 13), W = 10 + Math.floor(rnd() * 21);
+    let land = Array.from({ length: H }, () => Array.from({ length: W }, () => rnd() < 0.6));
+    for (let it = 0; it < 3; it++) {
+      land = land.map((row, r) => row.map((v, c) => {
+        let k = 0, m = 0;
+        for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+          const rr = r + dr, cc = c + dc;
+          if (rr < 0 || rr >= H || cc < 0 || cc >= W) continue;
+          m++; if (land[rr][cc]) k++;
+        }
+        return k * 2 > m || (k * 2 === m && v);
+      }));
+    }
+    const LAND = 'GGGGGGGGWWWWBBBFFFIV';
+    const off = rnd() < 0.3;   // some maps without a sea border: "Kein Feld" around them
+    const rows = land.map(row => row.map(v => v ? LAND[Math.floor(rnd() * LAND.length)] : (off && rnd() < 0.5 ? 'X' : 'M')).join(''));
+    const cells = [];
+    rows.forEach((row, r) => [...row].forEach((t, c) => { if ('GWBFI'.includes(t)) cells.push([r, c]); }));
+    for (let i = cells.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [cells[i], cells[j]] = [cells[j], cells[i]]; }
+    const want = Math.min(8, n + Math.floor(rnd() * 3));
+    for (const minD of [6, 5, 4, 3]) {
+      const spawns = [];
+      for (const p of cells) {
+        if (spawns.length >= want) break;
+        if (spawns.every(q => E.hexDistance(p[0], p[1], q[0], q[1]) >= minD)) spawns.push(p);
+      }
+      if (spawns.length >= n) return { name: 'Zufallskarte ' + seed, rows, spawns };
+    }
+  }
+  throw new Error('no custom map for ' + n + ' players');
+}
+
 /* map: 'plaettchen' (tile map with placement, also the lobby's "random"), 'original', 'gross',
+   'customgen' (a random custom map, genCustomMap),
    or a custom map object as stored by the map editor ({ name, rows, spawns, ... }). Agent seats
    place their start tile with the JS KI (kiPlaceSeat) in v1. */
 function reset(a) {
   const seed = (a.seed ?? Math.floor(Math.random() * 2 ** 31)) | 0;
-  const map = a.map || 'plaettchen';
+  const map = a.map === 'customgen' ? genCustomMap(seed, a.players.length) : (a.map || 'plaettchen');
   const fixed = map === 'original' || map === 'gross';
   const players = makePlayers(a.players, seed, fixed);
   const cfg = {
@@ -223,7 +262,7 @@ function observe(g, wantGrid = true) {
     pi, round: S.round, tags: tags.concat(['end']), teacher: ev.teacher,
     glob: b64(FEAT.glob(S, pi)), cand: b64(cand), pos: b64(pos),
   };
-  if (wantGrid) out.grid = b64(FEAT.grid(S, pi));
+  if (wantGrid) { const gr = FEAT.grid(S, pi); out.grid = b64(gr); out.gshape = [gr.h, gr.w]; }
   return out;
 }
 

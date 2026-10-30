@@ -30,7 +30,7 @@ def decode_obs(res, dims) -> Obs:
     n = len(res["tags"])
     grid = None
     if "grid" in res:
-        grid = _f32(res["grid"], (dims["GRID_C"], dims["GRID_H"], dims["GRID_W"]))
+        grid = _f32(res["grid"], (dims["GRID_C"], *res["gshape"]))
     pos = np.frombuffer(base64.b64decode(res["pos"]), dtype=np.int32).reshape(n, 2)
     return Obs(res["pi"], res["round"], res["tags"], res["teacher"], _f32(res["glob"]),
                _f32(res["cand"], (n, dims["CAND_F"])), pos, grid)

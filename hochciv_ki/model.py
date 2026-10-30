@@ -104,7 +104,7 @@ def collate(samples, device):
     for i, s in enumerate(samples):
         grid[i, :, :s[0].shape[1], :s[0].shape[2]] = s[0]
     grid = torch.from_numpy(grid)
-    glob = torch.from_numpy(np.stack([s[1] for s in samples]))
+    glob = torch.from_numpy(np.stack([s[1] for s in samples]).astype(np.float32))
     cand = np.zeros((B, N, F_), np.float32)
     pos = np.full((B, N, 2), -1, np.int64)
     mask = np.zeros((B, N), bool)

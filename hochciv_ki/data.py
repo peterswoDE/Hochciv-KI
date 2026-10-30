@@ -21,11 +21,11 @@ from .model import grid_to_u8
 from .pool import BridgePool
 
 SEAT_MIX = [   # (weight, players, map choices)
-    (3, ["agent", "agent"], ["plaettchen", "plaettchen", "original", "gross"]),
+    (3, ["agent", "agent"], ["plaettchen", "plaettchen", "original", "gross", "customgen"]),
     (2, ["agent", "ki:schwer"], ["plaettchen", "original"]),
     (1, ["agent", "ki:mittel"], ["plaettchen"]),
-    (1, ["agent", "agent", "agent"], ["plaettchen", "gross"]),
-    (2, ["agent", "agent", "agent", "agent"], ["plaettchen", "original", "gross"]),
+    (1, ["agent", "agent", "agent"], ["plaettchen", "gross", "customgen"]),
+    (2, ["agent", "agent", "agent", "agent"], ["plaettchen", "original", "gross", "customgen"]),
     (1, ["agent", "agent", "ki:schwer", "ki:schwer"], ["plaettchen"]),
     (1, ["agent", "ki:schwer", "ki:mittel", "bot:koenig"], ["plaettchen", "original"]),
 ]

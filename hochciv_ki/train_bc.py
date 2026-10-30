@@ -32,7 +32,8 @@ class Dataset:
         z = np.load(f)
         lens, shapes = z["lens"], z["gshape"]
         C = 32
-        grid, cand, pos = z["grid"], z["cand"].astype(np.float32), z["pos"].astype(np.int64)
+        # candidates and seat vectors stay float16 in memory (converted per batch in collate)
+        grid, cand, pos = z["grid"], z["cand"], z["pos"]
         go = co = 0
         for i in range(len(lens)):
             h, w = int(shapes[i][0]), int(shapes[i][1])
@@ -42,7 +43,7 @@ class Dataset:
             self.cand.append(cand[co:co + n])
             self.pos.append(pos[co:co + n])
             co += n
-        self.glob.extend(z["glob"].astype(np.float32))
+        self.glob.extend(z["glob"])
         self.label.extend(z["label"].tolist())
         self.z.extend(z["z"].tolist())
 
