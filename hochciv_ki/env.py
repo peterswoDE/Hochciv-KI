@@ -45,6 +45,7 @@ class GameResult:
     how: str = ""
     steps: int = 0
     trajectories: dict = field(default_factory=dict)   # pi -> list of (Obs, action, extra)
+    slot_of: dict = field(default_factory=dict)        # pi (turn order) -> seat in `players`
 
     def score(self, pi):
         """1 for a win, 1/k for a shared win, 0 otherwise."""
@@ -102,4 +103,4 @@ def play_game(bridge: Bridge, dims, players, agents: dict, seed, map_key="plaett
     finally:
         bridge.close_game(gid)
     return GameResult(st["over"], st["round"], st.get("winners", []), st["agents"], st.get("how", ""),
-                      steps, traj)
+                      steps, traj, slot_of)

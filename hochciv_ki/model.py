@@ -39,10 +39,10 @@ class ResBlock(nn.Module):
         self.c2 = nn.Conv2d(ch, ch, 3, padding=1, bias=False)
         self.b2 = nn.BatchNorm2d(ch)
 
-    def forward(self, x):
-        y = F.relu(self.b1(self.c1(x)))
+    def forward(self, x, m):
+        y = F.relu(self.b1(self.c1(x))) * m
         y = self.b2(self.c2(y))
-        return F.relu(x + y)
+        return F.relu(x + y) * m
 
 
 class Net(nn.Module):
@@ -53,12 +53,13 @@ class Net(nn.Module):
         C, G, CF = dims["GRID_C"], dims["GLOB_N"], dims["CAND_F"]
         self.register_buffer("gscale", torch.tensor(GRID_SCALE[:C]))
         self.stem = nn.Sequential(nn.Conv2d(C, ch, 3, padding=1, bias=False), nn.BatchNorm2d(ch), nn.ReLU())
-        self.tower = nn.Sequential(*[ResBlock(ch) for _ in range(blocks)])
+        self.tower = nn.ModuleList([ResBlock(ch) for _ in range(blocks)])
         self.glob = nn.Sequential(nn.Linear(G, d), nn.ReLU(), nn.Linear(d, d), nn.ReLU())
         self.state = nn.Sequential(nn.Linear(2 * ch + d, d), nn.ReLU(), nn.Linear(d, d), nn.ReLU())
         self.cand = nn.Sequential(nn.Linear(CF + ch, d), nn.ReLU(), nn.Linear(d, d))
         self.mix = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d, heads, 2 * d, dropout=0.0, batch_first=True), layers)
+            nn.TransformerEncoderLayer(d, heads, 2 * d, dropout=0.0, batch_first=True), layers,
+            enable_nested_tensor=False)
         self.logit = nn.Sequential(nn.Linear(2 * d, d), nn.ReLU(), nn.Linear(d, 1))
         self.value = nn.Sequential(nn.Linear(d, d), nn.ReLU(), nn.Linear(d, 1))
 
@@ -67,8 +68,13 @@ class Net(nn.Module):
         (True = real candidate). Returns logits [B,N] (-inf on padding) and value logits [B]."""
         B, C, H, W = grid_u8.shape
         g = grid_u8.float() / self.gscale.view(1, C, 1, 1)
-        valid = g[:, C - 1:C]                                   # last plane: inside the map
-        x = self.tower(self.stem(g))
+        valid = g[:, C - 1:C]                                   # last plane: playable cell
+        # cells of the map (any terrain plane, "Kein Feld" included); the rest is batch padding,
+        # zeroed after every layer so the result does not depend on the other maps in the batch
+        inmap = (grid_u8[:, :8].amax(1, keepdim=True) > 0).float()
+        x = self.stem(g) * inmap
+        for blk in self.tower:
+            x = blk(x, inmap)
         n_valid = valid.sum((2, 3)).clamp(min=1)
         mean = (x * valid).sum((2, 3)) / n_valid
         mx = (x - 1e4 * (1 - valid)).amax((2, 3))

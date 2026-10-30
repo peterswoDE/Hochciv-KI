@@ -177,7 +177,8 @@ function step(g, i) {
   if (!g.agents.has(pi)) return { err: 'not an agent turn' };
   const t = turnCtx(g);
   if (!t.cands) candidates(g);
-  if (i === t.cands.length) return endAgentTurn(g);
+  const finish = () => (g.online ? endOnline(g) : endAgentTurn(g));
+  if (i === t.cands.length) return finish();
   const c = t.cands[i];
   if (!c) return { err: 'bad candidate index ' + i };
   t.cands = null;
@@ -190,7 +191,7 @@ function step(g, i) {
     for (const a of armiesOf(S, pi)) if (before.get(a.id) !== a.r + ',' + a.c) t.memo.committed.add(a.id);
   }
   // like kiPlan, at most MAX_TURN_STEPS actions per turn – then the turn ends by itself
-  if (++t.steps >= MAX_TURN_STEPS && !S.over) return Object.assign(endAgentTurn(g), { tag: c.tag, forcedEnd: true });
+  if (++t.steps >= MAX_TURN_STEPS && !S.over) return Object.assign(finish(), { tag: c.tag, forcedEnd: true });
   return { tag: c.tag };
 }
 
@@ -235,8 +236,139 @@ function kiTurnFull(g) {
   g.turn = null;
 }
 
+/* ------------------------------------------------------------------ online play
+   A game loaded from the server's state (`load`). Candidates run on the local copy as usual,
+   while every engine action they call on that copy is recorded and translated into the
+   server's `action { type, params }` (engine-adapter.js applyAction). Calls on the KI's
+   evaluation copies are not recorded (they are other objects), nested engine calls neither.
+   The client sends the recorded actions and loads the server's next state. */
+const SERVER_ACTION = {
+  doResearch: (S, pi, tech) => ['research', { tech }],
+  useFreeTech: (S, pi, tech) => ['freeTech', { tech }],
+  useFreePick: (S, pi, tech) => ['freePick', { tech }],
+  useBackPick: (S, pi, tech) => ['backPick', { tech }],
+  copyTech: (S, pi, tech, mode) => ['copyTech', { tech, mode }],
+  foundCity: (S, pi, r, c) => ['foundCity', { r, c }],
+  growCity: (S, pi, city, mode) => ['growCity', { cityId: city.id, mode }],
+  sacrifice: (S, pi, city) => ['sacrifice', { cityId: city.id }],
+  buildArmy: (S, pi, city) => ['buildArmy', { cityId: city.id }],
+  moveArmy: (S, army, r, c) => ['moveArmy', { armyId: army.id, r, c }],
+  buyPower: (S, pi, n) => ['buyPower', { n: n || 1 }],
+  buildRoad: (S, pi, r, c, target) => ['buildRoad', { r, c, target }],
+  buyTile: (S, pi, r, c) => ['buyTile', { r, c }],
+  coverPop: (S, pi, kind, amount) => ['coverPop', { kind, amount }],
+  uncoverPop: (S, pi, kind, amount) => ['uncoverPop', { kind, amount }],
+  buildWonder: (S, pi, city, wonder) => ['buildWonder', { cityId: city.id, wonder }],
+  nuke: (S, pi, r, c) => ['nuke', { r, c }],
+};
+const rec = { S: null, list: null, depth: 0 };
+for (const name of Object.keys(SERVER_ACTION)) {
+  const orig = sandbox[name];
+  if (typeof orig !== 'function') continue;
+  sandbox[name] = function (...args) {
+    const top = rec.list && rec.depth === 0 && args[0] === rec.S;
+    rec.depth++;
+    let res;
+    try { res = orig.apply(this, args); } finally { rec.depth--; }
+    if (top && !res) rec.list.push(SERVER_ACTION[name](...args));
+    return res;
+  };
+}
+function recording(g, fn) {
+  rec.S = g.S; rec.list = []; rec.depth = 0;
+  try { const r = fn(); return Object.assign(r, { actions: rec.list }); } finally { rec.S = null; rec.list = null; }
+}
+
+/* The server's state for the agent at state index `pi`. Old turn context is kept while the
+   same turn goes on (failed candidates, committed armies). */
+function load(a) {
+  const S = a.state;
+  const pi = a.pi;
+  S.players[pi].kiLevel = a.kiLevel || 'schwer';
+  const gid = a.gid ?? (games.size ? Math.max(...games.keys()) + 1 : 1);
+  const old = games.get(gid);
+  const g = { S, agents: new Set([pi]), turn: null, online: true };
+  if (old && old.turn && old.turn.pi === S.cur && old.turn.round === S.round) {
+    g.turn = old.turn;
+    g.turn.K = E.kiContext(S, S.cur);   // armies and resources changed
+  }
+  games.set(gid, g);
+  return Object.assign({ gid }, status(g));
+}
+
+/* Online "end": position armies and use picks (recorded), then the server's endTurn. */
+function endOnline(g) {
+  const S = g.S, pi = S.cur, t = turnCtx(g);
+  if (!S.over) E.kiPositionArmies(S, pi, t.K, t.memo);
+  if (!S.over) E.kiUsePicks(S, pi, t.K);
+  rec.list.push(['endTurn', {}]);
+  g.turn = null;
+  return { tag: 'end' };
+}
+
+/* Start tile of the agent: the JS KI's choice (kiPlaceSeat) on the server's plan.
+   Returns { o, cell } for placement:action / async:place. */
+function place(a) {
+  const plan = a.plan;
+  const seat = plan.seats.find(s => s.idx === a.seatIdx);
+  if (!seat) throw new Error('no seat ' + a.seatIdx);
+  const pl = a.players[a.seatIdx];
+  let err = E.kiPlaceSeat(plan, seat, { civ: pl.civ, ability: pl.ability || 'basis' }, a.setup || null);
+  if (err) err = E.botPlaceSeat(plan, seat, E.mapRng((a.seed || 1) + 12345));
+  if (err || seat.cell == null) throw new Error('no placement: ' + err);
+  return { o: seat.o, cell: seat.cell };
+}
+
+/* A server action applied like engine-adapter.js applyAction – for testing the online path
+   without a server (tests/test_online_offline.py). After endTurn the other seats move. */
+function serverAction(g, type, params) {
+  const S = g.S, pi = S.cur;
+  const city = () => S.cities.find(c => c.id === params.cityId);
+  const need = x => x || (() => { throw new Error('not found'); })();
+  switch (type) {
+    case 'research': return E.doResearch(S, pi, params.tech);
+    case 'freeTech': return E.useFreeTech(S, pi, params.tech);
+    case 'freePick': return E.useFreePick(S, pi, params.tech);
+    case 'backPick': return E.useBackPick(S, pi, params.tech);
+    case 'copyTech': return E.copyTech(S, pi, params.tech, params.mode);
+    case 'foundCity': return E.foundCity(S, pi, params.r, params.c);
+    case 'growCity': return E.growCity(S, pi, need(city()), params.mode);
+    case 'sacrifice': return E.sacrifice(S, pi, need(city()));
+    case 'buildArmy': return E.buildArmy(S, pi, need(city()));
+    case 'moveArmy': {
+      const a = S.armies.find(x => x.id === params.armyId);
+      if (!a || a.owner !== pi) return 'army';
+      return E.moveArmy(S, a, params.r, params.c);
+    }
+    case 'buyPower': return E.buyPower(S, pi, params.n || 1);
+    case 'buildRoad': return E.buildRoad(S, pi, params.r, params.c, params.target);
+    case 'buyTile': return E.buyTile(S, pi, params.r, params.c);
+    case 'coverPop': return E.coverPop(S, pi, params.kind, params.amount);
+    case 'uncoverPop': return E.uncoverPop(S, pi, params.kind, params.amount);
+    case 'buildWonder': return E.buildWonder(S, pi, need(city()), params.wonder);
+    case 'nuke': return E.nuke(S, pi, params.r, params.c);
+    case 'endTurn': {
+      const stop = E.blockingIssues(S, pi);
+      if (stop && stop.length) return stop[0];
+      E.endTurn(S);
+      runOthers(g);
+      return null;
+    }
+    default: return 'unknown action ' + type;
+  }
+}
+
 /* ------------------------------------------------------------------ protocol */
 const handlers = {
+  server_action: a => { const g = game(a); return Object.assign({ err: serverAction(g, a.type, a.params || {}) || null }, status(g)); },
+  load: a => load(a),
+  place: a => place(a),
+  // online step: like step, but returns the server actions instead of continuing the game
+  step_online: a => {
+    const g = game(a);
+    return recording(g, () => step(g, a.i));
+  },
+  rollSetup: a => ({ setup: E.rollSetup(a.cfg) }),
   info: () => ({ version: VERSION, engineDir: ENGINE_DIR, civs: CIVS.map(c => c.k), dims: FEAT.dims }),
   observe: a => observe(game(a), a.grid !== false),
   reset: a => reset(a),

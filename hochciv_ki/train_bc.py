@@ -113,7 +113,6 @@ def main():
     if args.init:
         net, _ = load_net(args.init, device)
     else:
-        from .pool import BridgePool  # dims from the engine
         from .bridge import Bridge
         with Bridge() as b:
             dims = b.info()["dims"]
