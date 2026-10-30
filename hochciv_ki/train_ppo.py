@@ -78,8 +78,8 @@ def gae(traj, z, lam):
 
 
 class PPO:
-    def __init__(self, net, lr, clip=0.2, vcoef=0.5, ent=0.01):
-        self.net, self.clip, self.vcoef, self.ent = net, clip, vcoef, ent
+    def __init__(self, net, lr, clip=0.2, vcoef=0.5, ent=0.01, target_kl=0.03):
+        self.net, self.clip, self.vcoef, self.ent, self.target_kl = net, clip, vcoef, ent, target_kl
         self.opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4)
 
     def update(self, batch, epochs, mb, device, imit):
@@ -90,10 +90,17 @@ class PPO:
         adv = np.array([b[3] for b in batch], np.float32)
         adv = (adv - adv.mean()) / (adv.std() + 1e-6)
         stats = {"pol": 0.0, "val": 0.0, "ent": 0.0, "imit": 0.0, "kl": 0.0, "clipfrac": 0.0, "n": 0}
+        extra = {"kl0": None, "epochs_done": 0}
         idx = np.arange(len(batch))
-        for _ in range(epochs):
+        stop = False
+        for ep in range(epochs):
+            ep_kl, ep_n = 0.0, 0
             np.random.shuffle(idx)
             for s in range(0, len(idx), mb):
+                # early stop: the policy moved far enough from the one that collected the data
+                if ep_n and ep_kl / ep_n > 1.5 * self.target_kl:
+                    stop = True
+                    break
                 b = idx[s:s + mb]
                 grid, glob, cand, pos, mask = collate([batch[i][0] for i in b], device)
                 a = torch.tensor([batch[i][1] for i in b], device=device)
@@ -117,15 +124,23 @@ class PPO:
                 torch.nn.utils.clip_grad_norm_(self.net.parameters(), 1.0)
                 self.opt.step()
                 n = len(b)
+                kl = (lp_old - lp).mean().item()
+                if extra["kl0"] is None:
+                    extra["kl0"] = round(kl, 5)     # before any step: should be ~0
+                ep_kl += kl * n
+                ep_n += n
                 stats["n"] += n
                 stats["pol"] += pl.item() * n
                 stats["val"] += vl.item() * n
                 stats["ent"] += ent.item() * n
                 stats["imit"] += il.item() * n
-                stats["kl"] += (lp_old - lp).mean().item() * n
+                stats["kl"] += kl * n
                 stats["clipfrac"] += ((ratio - 1).abs() > self.clip).float().mean().item() * n
+            extra["epochs_done"] = round(ep + ep_n / len(idx), 2)
+            if stop:
+                break
         n = max(1, stats.pop("n"))
-        return {k: v / n for k, v in stats.items()}
+        return {**{k: v / n for k, v in stats.items()}, **extra}
 
 
 def main():
@@ -138,7 +153,8 @@ def main():
     ap.add_argument("--games", type=int, default=168, help="games per iteration")
     ap.add_argument("--epochs", type=int, default=3)
     ap.add_argument("--mb", type=int, default=256)
-    ap.add_argument("--lr", type=float, default=5e-5)
+    ap.add_argument("--lr", type=float, default=1e-5)
+    ap.add_argument("--target-kl", type=float, default=0.03)
     ap.add_argument("--lam", type=float, default=0.95)
     ap.add_argument("--imit", type=float, default=0.3, help="initial imitation weight")
     ap.add_argument("--imit-half", type=float, default=100, help="iterations until it halves")
@@ -161,7 +177,7 @@ def main():
     snap_net, _ = load_net(args.init if not st["league"] else st["league"][-1], device)
     learner_srv = InferenceServer(copy.deepcopy(net).eval(), device)
     snap_srv = InferenceServer(snap_net, device)
-    ppo = PPO(net, args.lr)
+    ppo = PPO(net, args.lr, target_kl=args.target_kl)
     if args.resume and "opt" in ck:
         ppo.opt.load_state_dict(ck["opt"])
     kw = {"workers": args.workers} if args.workers else {}
@@ -197,7 +213,7 @@ def main():
             st["iter"] = it
             rec = {"iter": it, "samples": len(batch), "train_score_vs_ki": wins / max(1, games_vs_ki),
                    "collect_s": round(t1 - t0), "update_s": round(t2 - t1), "imit_w": imit,
-                   **{k: round(v, 4) for k, v in stats.items()}}
+                   **{k: (round(v, 4) if isinstance(v, float) else v) for k, v in stats.items()}}
             print(json.dumps(rec), flush=True)
             if it % args.snap_every == 0:
                 p = out / f"snap_{it:05d}.pt"
