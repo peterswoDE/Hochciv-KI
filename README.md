@@ -56,6 +56,7 @@ Baselines (engine v98, tile map, against KI schwer; score = share of wins, fair 
 |---|---|---|
 | kiturn | 0.500 ± 0.069 (200 games) | |
 | teacher | 0.525 ± 0.069 (200 games) | 0.292 ± 0.082 (120 games) |
+| BC network (730k samples, 6 epochs) | 0.540 ± 0.069 (200 games) | 0.283 ± 0.081 (120 games) |
 
 ## Training
 
