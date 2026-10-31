@@ -180,6 +180,8 @@ def main():
     ppo = PPO(net, args.lr, target_kl=args.target_kl)
     if args.resume and "opt" in ck:
         ppo.opt.load_state_dict(ck["opt"])
+        for g in ppo.opt.param_groups:      # the command line wins over the saved schedule
+            g["lr"] = args.lr
     kw = {"workers": args.workers} if args.workers else {}
     mix = MIXES[args.mix]
     rng = random.Random(12345 + st["iter"])
