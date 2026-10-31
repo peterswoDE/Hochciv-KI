@@ -39,9 +39,8 @@ def main():
     assert env.get("HOCHCIV_TOKEN"), "needs HOCHCIV_TOKEN (a staging bot account)"
 
     brain = Brain("teacher")
-    host = Manager(Account(url, env["HOCHCIV_USER"], env["HOCHCIV_PASSWORD"]), brain, settings={
-        "mode": "host", "host_live": 0, "host_async": 1,
-        "async": {"mapKey": args.map, "playerCount": 2, "kiCount": 0, "civMode": "random", "isPublic": True}})
+    host = Manager(Account(url, env["HOCHCIV_USER"], env["HOCHCIV_PASSWORD"]), brain, settings={"host": {"on": True, "setups": [
+        {"id": "test", "kind": "async", "count": 1, "mapKey": args.map, "playerCount": 2, "kiCount": 0, "civMode": "random"}]}})
     host.start()
     hacc = host.acc
 
@@ -50,7 +49,7 @@ def main():
         return next((s for s in mine if s.get("isHost") and s.get("freeSeats")), None)
     game = wait("hosted Rundenspiel", hosted, 120)
     gid = game["id"]
-    host.update_settings({"mode": "select"})        # no second game after this one
+    host.update_settings({"host": {"on": False}})   # no second game after this one
     log.info("Rundenspiel %s (code %s) hosted", gid, game["joinCode"])
 
     # the bot joins with its client off
@@ -69,7 +68,7 @@ def main():
     log.info("bot's turn while its client is off: %s, round %s", g.get("status"), g.get("round"))
 
     t0 = time.time()
-    bot = Manager(bacc, Brain(args.agent), settings={"mode": "select"})
+    bot = Manager(bacc, Brain(args.agent), settings={})             # joins and hosts nothing
     bot.start()
     g = wait("bot plays on launch", lambda: (lambda x: x if not x.get("yourTurn") or x.get("status") != g.get("status") or x.get("round") != g.get("round") else None)(bot_game() or {}), 120, every=1)
     log.info("bot played %.0f s after launch -> %s, round %s", time.time() - t0, g.get("status"), g.get("round"))

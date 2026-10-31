@@ -28,14 +28,15 @@ def main():
     assert "staging" in url, "staging only"
 
     host = Manager(Account(url, name="KI-Testhost"), Brain("teacher"),
-                   settings={"greeting": "", "live": {"mapKey": args.map, "playerCount": 2, "kiCount": 0, "turnTime": 0}})
+                   settings={"greeting": "", "host": {"setups": [
+                       {"id": "test", "kind": "live", "mapKey": args.map, "playerCount": 2, "kiCount": 0, "turnTime": 0}]}})
     host.start()
     token = env.get("HOCHCIV_TOKEN")
     bot = Manager(Account(url, env.get("HOCHCIV_USER"), env.get("HOCHCIV_PASSWORD"), token=token,
                           name=None if token else "HochCiv-KI [Bot]"), Brain(args.agent))
     bot.acc.login()                  # no Rundenspiele/matchmaking connections in this test
 
-    hg = host.start_live(host_cfg=dict(host.settings["live"]))
+    hg = host.start_live(host_cfg=dict(host.settings["host"]["setups"][0]))
     deadline = time.time() + 30
     while not (hg.g and hg.g.get("sessionId")) and time.time() < deadline and not hg.done.is_set():
         time.sleep(0.5)

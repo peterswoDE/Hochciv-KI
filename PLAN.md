@@ -88,10 +88,10 @@ online on hochciv.de (public lobbies, Rundenspiele, later matchmaking).
   jar; password login for regular accounts), sends no `Origin` header (scripts are allowed
   through), reads `state:update`, sends `action {type, params}` and answers placement.
   Checks the session every 10 minutes and logs in again when it ended.
-- **Control panel** (`panel.py`, 127.0.0.1 only, token per run): modes *join all* (up to N
-  live games / M Rundenspiele), *host* (N live lobbies / M Rundenspiele of its own),
-  *selected* (game list with Join buttons) and *matchmaking*; settings saved in
-  `runs/online-settings.json`.
+- **Control panel** (`panel.py`, 127.0.0.1 only, token per run): switches that work
+  together – *join* (live games / Rundenspiele, how many at once, join filters), *host* (a list
+  of setups, each kept × times) and *matchmaking*; game list with Join buttons; settings
+  always visible, saved on change in `runs/online-settings.json`.
 - **Lobbies:** polls `GET /api/public-sessions`, joins lobbies that fit the scope (player
   count, no events/wonders/marathon, current version) and allow player-bots
   (`playerBots`, `playerBotsFree`), writes a short chat line saying it
@@ -141,7 +141,7 @@ online on hochciv.de (public lobbies, Rundenspiele, later matchmaking).
 | M4 | Done: PPO 1v1, 0.559 ± 0.040 on 600 fresh games (BC on the same games 0.523) |
 | M5 | Done (v1 goal): `checkpoints/v1.pt` beats KI schwer in every v1 mode – 1v1 tile map 0.610 ± 0.055, 4p tile map 0.310 ± 0.059 (fair 0.25), 3p 0.472 (fair 0.333); details in README. PPO keeps training |
 | M6 | Live games done and tested on staging (guest host + bot, no rejected actions); Rundenspiele implemented but untested: they need a second human account on staging |
-| M7 | Client switched to bot accounts (token login, player-bot rules, matchmaking for bots); control panel with modes join/host/selected/matchmaking. Bot accounts live on hochciv.de. Needs a bot token to go online |
+| M7 | Client switched to bot accounts (token login, player-bot rules, matchmaking for bots); control panel with join/host/matchmaking switches, host setups and join filters; tested on staging with a staging bot account. Bot accounts live on hochciv.de. Needs a production bot token to go online |
 
 v1 criterion for more than two empires: the fair share is 1/n, so "beats KI schwer" means a
 win share significantly above 1/n (95 % CI above 0.25 in 4p), aiming at 10 % above it.

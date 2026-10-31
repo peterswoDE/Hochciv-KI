@@ -40,6 +40,7 @@ Plays complete games with a random agent against the JS KI and bots on tile, fix
 | `hochciv_ki/online/panel.py`, `panel.html` | Local control panel for the online client |
 | `hochciv_ki/selftest.py` | M0 selftest |
 | `tests/test_online_offline.py` | Online path against a local "server" worker |
+| `tests/staging_live.py`, `staging_async.py`, `staging_modes.py` | Live game, Rundenspiel and join/host switches on staging |
 | `tests/staging_live.py` | Live game on staging: guest host + bot |
 
 ## Evaluation
@@ -113,20 +114,22 @@ regular account that logs in with a password only.)
 It logs in with the token (`POST /api/auth/bot`) and opens a control panel on
 <http://127.0.0.1:8765/> (`--port`, `--open` opens it in the browser, `--no-panel` runs with
 the saved settings). The panel shows the running games, the public lobbies and open
-Rundenspiele with a *Join* button, and the log. Modes:
+Rundenspiele with a *Join* button, the log, and the settings in a column on the right. Every
+change is saved at once (`runs/online-settings.json`). The switches work together:
 
-| Mode | What the bot does |
+| Setting | What the bot does |
 |---|---|
-| Join all games | Joins every fitting public lobby, up to N live games at once, and fitting open Rundenspiele while it is in fewer than M |
-| Host games | Keeps N live lobbies and M Rundenspiele of its own open or running (map, empires, KI seats, timer, … in the settings). A lobby starts when it is full, or after X minutes with at least Y players; free seats become KI |
-| Selected games | Joins only what you pick in the game list |
+| Join games | Joins public lobbies (live games: on/off and how many at once) and open Rundenspiele (on/off, how many at once) that match the join filters: maps, empires min–max, KI seats, ranked/unranked, live only with a turn timer, games hosted by other bots |
+| Host games | A list of setups: live lobby or Rundenspiel, map, empires, KI seats and level, turn timer, nations, other player-bots, public, ranked (🔥: MMR counts, KI on Schwer); each setup is kept open or running × times. A live lobby starts when it is full, or after X minutes with at least Y players; free seats become KI |
 | Matchmaking | Ranked queue (bot accounts only; it only meets players who opted in to bots), one game at a time |
+| Chat greeting | Sent on entering a live lobby |
 
-In every mode it plays all games it is already in. *Fitting* = a map and empire count allowed
-in the settings, no events, wonders or marathon, player-bots allowed with room for one, and
-for Rundenspiele the current engine. The settings (gear button) are saved in
-`runs/online-settings.json`. The panel listens on 127.0.0.1 only and every API call needs the
-token in the page.
+The game list's *Join* works for every game the bot can play, whatever the join filters say;
+the reasons a game doesn't match are shown next to it (red ones block joining: full, no
+player-bots, events, wonders, marathon, more than 4 empires, an older engine). The bot always
+plays every game it is in. The public lobby list shows only the map and the human seats: the
+other filters are checked right after joining, and the bot leaves a lobby that doesn't match.
+The panel listens on 127.0.0.1 only and every API call needs the token in the page.
 
 It says in the chat that it is an AI (text in the settings) and plays under the bot's account
 name. When the session ends it logs in again; a renewed token or a banned owner stops it with
