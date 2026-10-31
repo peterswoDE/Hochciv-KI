@@ -129,7 +129,7 @@ online on hochciv.de (public lobbies, Rundenspiele, later matchmaking).
 | M2 | Done: paired evaluation; the teacher (one kiPlan step) plays like KI schwer: 0.525 vs the KI's own 0.500 |
 | M3 | Done: BC on 730k samples, 0.540 in 1v1 and 0.283 in 4p against KI schwer (teacher level) |
 | M4 | Done: PPO 1v1, 0.559 ± 0.040 on 600 fresh games (BC on the same games 0.523) |
-| M5 | Running: PPO with all v1 modes (1v1, 3p, 4p; tile, fixed, big and random custom maps) |
+| M5 | Done (v1 goal): `checkpoints/v1.pt` beats KI schwer in every v1 mode – 1v1 tile map 0.610 ± 0.055, 4p tile map 0.310 ± 0.059 (fair 0.25), 3p 0.472 (fair 0.333); details in README. PPO keeps training |
 | M6 | Live games done and tested on staging (guest host + bot, no rejected actions); Rundenspiele implemented but untested: they need a second human account on staging |
 | M7 | Waiting for the bot account on hochciv.de |
 

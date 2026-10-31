@@ -62,6 +62,18 @@ M4 (1v1): after 87 PPO iterations (about 14 000 games), on 600 fresh games (seed
 against KI schwer: **PPO 0.559 ± 0.040**, BC on the same games 0.523 ± 0.040. Sampling from the
 policy instead of the greedy choice plays about the same (0.575 vs 0.573 on 200 games).
 
+v1 model (`checkpoints/v1.pt`, PPO iteration ~118 with all v1 modes since iteration 92), fresh
+seeds 80000+, against KI schwer:
+
+| Mode | Score | Fair share |
+|---|---|---|
+| 1v1, tile map (300 games) | **0.610 ± 0.055** | 0.500 |
+| 1v1, original map (200) | 0.583 ± 0.068 | 0.500 |
+| 1v1, random custom map (200) | 0.562 ± 0.069 | 0.500 |
+| 3 players, big map (180) | **0.472 ± 0.073** | 0.333 |
+| 4 players, tile map (240) | 0.310 ± 0.059 | 0.250 |
+| 4 players, random custom map (160) | 0.338 ± 0.073 | 0.250 |
+
 ## Training
 
 ```
