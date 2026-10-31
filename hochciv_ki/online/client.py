@@ -640,8 +640,7 @@ class Rundenspiele(Conn):
         elif ev == "cmd:reconnect":
             self.guarded(self.reconnect)
         elif ev == "async:update" and data:
-            if self.async_open != data.get("id") or self.newer(data.get("state"), (self.view or {}).get("state")):
-                self.view = data
+            self.accept(data)
             self.drain()
             self.guarded(self.turn, self.view)
 
@@ -680,9 +679,11 @@ class Rundenspiele(Conn):
                     break
             if len(hosted) < st["host_async"]:
                 self.mine = self.acc.get("/api/async").json().get("mine", self.mine)
-        for s in self.mine:
-            if s.get("yourTurn") or s.get("status") == "placement":
-                self.guarded(self.open_game, s["id"])
+        due = [s for s in self.mine if s.get("yourTurn")]
+        if due:
+            self.log.info("due: %s", ", ".join(f"{s.get('joinCode')} ({s.get('status')}, round {s.get('round')})" for s in due))
+        for s in due:
+            self.guarded(self.open_game, s["id"])
 
     def join(self, gid, picked=False):
         r = self.acc.post(f"/api/async/{gid}/join", json={"civ": "random", "ability": "random"})
@@ -711,17 +712,24 @@ class Rundenspiele(Conn):
     def open_game(self, gid):
         res = self.call("async:open", {"id": gid})
         self.async_open = gid
-        self.turn(res["view"])
+        self.accept(res["view"])
+        self.turn(self.view)
+
+    def accept(self, view):
+        """Keep the newest view of the opened game. Views without a state (setup, placement)
+        are always newer than none; a state never goes back (logSeq)."""
+        old = self.view if (self.view or {}).get("id") == view.get("id") else None
+        if not old or not view.get("state") or self.newer(view["state"], old.get("state")):
+            self.view = view
 
     def take_update(self, ev, data):
         if ev == "async:update" and data and self.async_open == data.get("id"):
-            if self.newer(data.get("state"), (self.view or {}).get("state")):
-                self.view = data
+            self.accept(data)
             return True
         return False
 
     def turn(self, view):
-        gid = view.get("id")
+        gid = (view or {}).get("id")
         if not gid:
             return
         if view.get("status") == "placement" and view.get("placement") and not view["placement"].get("placed"):
