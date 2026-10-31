@@ -119,3 +119,19 @@ online on hochciv.de (public lobbies, Rundenspiele, later matchmaking).
 - **Engine changes ("always current"):** observation features read engine state fields
   directly, so a renamed field breaks them. The bridge selftest runs on every new version.
 - **Hex geometry / map size:** maps vary in size. Padding to a maximum size plus masks.
+
+## Status (2026-10-31)
+
+| # | Status |
+|---|---|
+| M0 | Done: venv (Python 3.13, torch 2.11 + CUDA 12.8 on the RTX 5070), Node bridge loads the server's engine (v98), selftest |
+| M1 | Done: features (map planes, seat vectors, candidates evaluated on copies), teacher label, worker pool (~6 games/s with observations) |
+| M2 | Done: paired evaluation; the teacher (one kiPlan step) plays like KI schwer: 0.525 vs the KI's own 0.500 |
+| M3 | Done: BC on 730k samples, 0.540 in 1v1 and 0.283 in 4p against KI schwer (teacher level) |
+| M4 | Done: PPO 1v1, 0.559 ± 0.040 on 600 fresh games (BC on the same games 0.523) |
+| M5 | Running: PPO with all v1 modes (1v1, 3p, 4p; tile, fixed, big and random custom maps) |
+| M6 | Live games done and tested on staging (guest host + bot, no rejected actions); Rundenspiele implemented but untested: they need a second human account on staging |
+| M7 | Waiting for the bot account on hochciv.de |
+
+v1 criterion for more than two empires: the fair share is 1/n, so "beats KI schwer" means a
+win share significantly above 1/n (95 % CI above 0.25 in 4p), aiming at 10 % above it.
