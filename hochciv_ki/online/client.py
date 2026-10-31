@@ -21,7 +21,9 @@ agent picks is recorded as engine calls and sent as `action { type, params }`.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import os
 import queue
 import secrets
 import threading
@@ -52,6 +54,11 @@ def read_env(path):
             k, v = line.split("=", 1)
             out[k.strip()] = v.strip().strip('"').strip("'")
     return out
+
+
+def fingerprint(state) -> int:
+    """Changes with every applied action (resources, positions, logs, ...)."""
+    return hash(json.dumps(state, sort_keys=True))
 
 
 def config_ok(cfg: dict, n_players=None) -> str | None:
@@ -128,6 +135,16 @@ class Client:
     def connect(self):
         cookie = "; ".join(f"{c.name}={c.value}" for c in self.http.cookies)
         self.sio = socketio.Client(reconnection=True, logger=False, engineio_logger=False)
+        # engine.io handles every message in its own thread, so an ack could overtake the
+        # broadcast of the previous action and the next decision would see a stale state.
+        # Our handlers only queue events, so handling them in order in the read thread is safe.
+        trigger = self.sio.eio._trigger_event
+
+        def in_order(event, *args, **kw):
+            if event == "message":
+                kw["run_async"] = False
+            return trigger(event, *args, **kw)
+        self.sio.eio._trigger_event = in_order
         for ev in ("game:start", "state:update", "placement:start", "game:over", "session:kicked",
                    "async:update", "match:found", "match:ready", "match:cancelled", "turn:timeout",
                    "lobby:player:updated", "lobby:config:update", "session:rematch", "player:joined"):
@@ -172,7 +189,9 @@ class Client:
         if ev in ("game:start", "state:update") and self.live_game:
             if ev == "game:start":
                 self.live_game["yourIndex"] = data["yourIndex"]
-            self.live_game["state"] = data["state"]
+                self.live_game["state"] = data["state"]
+            else:
+                self.take_update(ev, data)
             self.drain()                      # act on the newest state only
             self.guarded(self.live_turn)
         elif ev == "placement:start" and self.live_game:
@@ -190,7 +209,8 @@ class Client:
                 self.leave_live(None)
                 self._played_live = True
         elif ev == "async:update" and data:
-            self._async_view = data
+            if self.async_open != data.get("id") or self.newer(data.get("state"), (self._async_view or {}).get("state")):
+                self._async_view = data
             self.drain()
             self.guarded(self.async_turn, self._async_view)
         elif ev == "match:found":
@@ -278,9 +298,12 @@ class Client:
         if S.get("over") or me is None or me < 0 or S["cur"] != me:
             return
         def send(typ, params):
-            # live: the server acks, then broadcasts exactly one state:update (none on errors)
+            # live: the server acks, then broadcasts the new state (nothing on errors). The
+            # server also rebroadcasts the unchanged state every 15 s (sync loop), so wait for
+            # an update that differs from the state before the action.
+            before = fingerprint(self.live_game["state"])
             self.call("action", {"type": typ, "params": params})
-            self.wait_event("state:update")
+            self.wait_event("state:update", changed_from=before)
         self.play_turn(S, me, send, lambda: self.live_game and self.live_game["state"])
 
     # ---------------------------------------------------------------- shared turn logic
@@ -298,7 +321,14 @@ class Client:
                     sent += 1
                 except RuntimeError as e:
                     rejected += 1
-                    log.warning("rejected %s %s (%s): %s", typ, params, tag, e)
+                    cur = latest() or state
+                    if os.environ.get("HOCHCIV_KI_DUMP"):
+                        Path(os.environ["HOCHCIV_KI_DUMP"]).write_text(json.dumps(
+                            {"state": cur, "decided_on": state, "action": [typ, params], "me": me, "error": str(e)}))
+                    city = next((c for c in cur.get("cities", []) if c.get("id") == params.get("cityId")), None)
+                    log.warning("%s: rejected %s %s (%s): %s [logSeq %s, cur %s, me %s, round %s, cities %s, city %s]",
+                                self.name, typ, params, tag, e, cur.get("logSeq"), cur.get("cur"), me, cur.get("round"),
+                                len(cur.get("cities", [])), city and {k: city.get(k) for k in ("grown", "freeUsed", "born", "pop", "owner")})
                     break
                 ended = typ == "endTurn"
             if ended:
@@ -313,13 +343,22 @@ class Client:
                 return
         send("endTurn", {})
 
+    @staticmethod
+    def newer(new, old):
+        """A state is never replaced by an older one (logSeq only grows)."""
+        if not old or not new:
+            return bool(new)
+        return (new.get("logSeq") or 0) >= (old.get("logSeq") or 0)
+
     def take_update(self, ev, data):
         """Apply a state update without starting a turn. True if it was one."""
         if ev == "state:update" and self.live_game:
-            self.live_game["state"] = data["state"]
+            if self.newer(data["state"], self.live_game.get("state")):
+                self.live_game["state"] = data["state"]
             return True
         if ev == "async:update" and data and self.async_open == data.get("id"):
-            self._async_view = data
+            if self.newer(data.get("state"), (self._async_view or {}).get("state")):
+                self._async_view = data
             return True
         return False
 
@@ -333,7 +372,7 @@ class Client:
             if not self.take_update(ev, data):
                 self.stash.append((ev, data))
 
-    def wait_event(self, kind, timeout=10):
+    def wait_event(self, kind, timeout=10, changed_from=None):
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
@@ -341,7 +380,9 @@ class Client:
             except queue.Empty:
                 break
             if ev == kind and self.take_update(ev, data):
-                return
+                if changed_from is None or fingerprint(self.live_game["state"]) != changed_from:
+                    return
+                continue
             if not self.take_update(ev, data):
                 self.stash.append((ev, data))
         log.warning("no %s within %ss", kind, timeout)

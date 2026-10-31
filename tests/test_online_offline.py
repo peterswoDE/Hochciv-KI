@@ -12,8 +12,8 @@ from hochciv_ki.bridge import Bridge
 from hochciv_ki.env import TeacherAgent, decode_obs
 
 
-def run(games=6):
-    agent = TeacherAgent()
+def run(games=6, agent=None):
+    agent = agent or TeacherAgent()
     bad = 0
     with Bridge() as server, Bridge() as client:
         dims = client.info()["dims"]
@@ -48,4 +48,9 @@ def run(games=6):
 
 
 if __name__ == "__main__":
-    sys.exit(1 if run(int(sys.argv[1]) if len(sys.argv) > 1 else 6) else 0)
+    n = int(sys.argv[1]) if len(sys.argv) > 1 else 6
+    agent = None
+    if len(sys.argv) > 2:          # a checkpoint: the network plays instead of the teacher
+        from hochciv_ki.model import load_agent
+        agent = load_agent(sys.argv[2])
+    sys.exit(1 if run(n, agent) else 0)
