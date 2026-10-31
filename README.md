@@ -36,7 +36,8 @@ Plays complete games with a random agent against the JS KI and bots on tile, fix
 | `hochciv_ki/train_bc.py` | Behaviour cloning |
 | `hochciv_ki/infer.py` | Batched GPU inference for many game threads |
 | `hochciv_ki/train_ppo.py` | PPO self-play against a league (snapshots, JS KI, bots) |
-| `hochciv_ki/online/client.py` | Online client: live lobbies, Rundenspiele, matchmaking (off) |
+| `hochciv_ki/online/client.py` | Online client: live lobbies, Rundenspiele, matchmaking, modes |
+| `hochciv_ki/online/panel.py`, `panel.html` | Local control panel for the online client |
 | `hochciv_ki/selftest.py` | M0 selftest |
 | `tests/test_online_offline.py` | Online path against a local "server" worker |
 | `tests/staging_live.py` | Live game on staging: guest host + bot |
@@ -106,13 +107,27 @@ HOCHCIV_TOKEN=hcbot_...
 regular account that logs in with a password only.)
 
 ```
-.venv\Scripts\python -m hochciv_ki.online.client --config online.env --agent ckpt:checkpoints\ppo\best.pt
+.venv\Scripts\python -m hochciv_ki.online.client --config online.env --agent ckpt:checkpoints\v1.pt --open
 ```
 
-It logs in with the token (`POST /api/auth/bot`), joins fitting public lobbies (2–4 empires,
-no events, wonders or marathon) whose host allows player-bots and that have room for one, says
-in the chat that it is an AI, and plays under the bot's account name; it also joins and plays
-open public Rundenspiele that allow player-bots. With `--matchmaking` it plays ranked
-matchmaking instead of public lobbies (bot accounts only; it only meets players who opted in
-to bots) and queues again after every game. When the session ends it logs in again; a renewed
-token or a banned owner stops it with an error.
+It logs in with the token (`POST /api/auth/bot`) and opens a control panel on
+<http://127.0.0.1:8765/> (`--port`, `--open` opens it in the browser, `--no-panel` runs with
+the saved settings). The panel shows the running games, the public lobbies and open
+Rundenspiele with a *Join* button, and the log. Modes:
+
+| Mode | What the bot does |
+|---|---|
+| Join all games | Joins every fitting public lobby, up to N live games at once, and fitting open Rundenspiele while it is in fewer than M |
+| Host games | Keeps N live lobbies and M Rundenspiele of its own open or running (map, empires, KI seats, timer, … in the settings). A lobby starts when it is full, or after X minutes with at least Y players; free seats become KI |
+| Selected games | Joins only what you pick in the game list |
+| Matchmaking | Ranked queue (bot accounts only; it only meets players who opted in to bots), one game at a time |
+
+In every mode it plays all games it is already in. *Fitting* = a map and empire count allowed
+in the settings, no events, wonders or marathon, player-bots allowed with room for one, and
+for Rundenspiele the current engine. The settings (gear button) are saved in
+`runs/online-settings.json`. The panel listens on 127.0.0.1 only and every API call needs the
+token in the page.
+
+It says in the chat that it is an AI (text in the settings) and plays under the bot's account
+name. When the session ends it logs in again; a renewed token or a banned owner stops it with
+an error.

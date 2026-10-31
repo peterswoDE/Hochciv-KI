@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HochCiv-KI Control</title>
+<style>
+:root {
+  --bg: #f6f3ec; --card: #fffdf8; --ink: #2b2620; --muted: #7a7064; --line: #e4dccd;
+  --accent: #8a5a1f; --accent-ink: #fff; --ok: #2f7d4f; --warn: #a3631a; --bad: #a33a2a; --chip: #efe7d8;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #1b1916; --card: #24211d; --ink: #ece6dc; --muted: #a39a8c; --line: #3a352e;
+          --accent: #d39a52; --accent-ink: #1b1916; --ok: #6cc08c; --warn: #e0a55a; --bad: #e07a68; --chip: #322e28; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, "Segoe UI", sans-serif; }
+header { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--card); flex-wrap: wrap; }
+header h1 { font-size: 17px; margin: 0; }
+.chip { background: var(--chip); border-radius: 999px; padding: 2px 10px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.chip.bot { color: var(--ok); }
+.spacer { flex: 1; }
+main { max-width: 1100px; margin: 0 auto; padding: 16px 20px 40px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+.card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 7px; padding: 5px 12px; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button.small { padding: 2px 9px; font-size: 12px; }
+.modes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.mode { text-align: left; padding: 10px 12px; border-radius: 9px; }
+.mode b { display: block; font-size: 14px; }
+.mode span { color: var(--muted); font-size: 12px; }
+.mode.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.mode.on b { color: var(--accent); }
+.summary { margin-top: 10px; color: var(--muted); }
+.note { color: var(--warn); margin-top: 6px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; color: var(--muted); font-weight: 600; }
+td.r, th.r { text-align: right; }
+.empty { color: var(--muted); padding: 8px 0; }
+.why { color: var(--muted); font-size: 12px; }
+.ph { font-size: 12px; border-radius: 5px; padding: 1px 7px; background: var(--chip); white-space: nowrap; }
+.ph.playing, .ph.placement { color: var(--ok); }
+.ph.lobby, .ph.connecting { color: var(--warn); }
+.ph.failed { color: var(--bad); }
+.turn { color: var(--ok); font-weight: 600; }
+.tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+.tabs button.on { border-color: var(--accent); color: var(--accent); }
+pre.log { margin: 0; max-height: 260px; overflow: auto; font: 12px/1.5 ui-monospace, Consolas, monospace; color: var(--muted); white-space: pre-wrap; }
+.scroll { overflow-x: auto; }
+/* settings drawer */
+#drawer { position: fixed; inset: 0; display: none; }
+#drawer.open { display: block; }
+#drawer .shade { position: absolute; inset: 0; background: rgba(0,0,0,.35); }
+#drawer .panel { position: absolute; right: 0; top: 0; bottom: 0; width: min(420px, 100%); background: var(--card); border-left: 1px solid var(--line); display: flex; flex-direction: column; }
+#drawer .head { padding: 14px 18px; border-bottom: 1px solid var(--line); display: flex; align-items: center; }
+#drawer .head h2 { margin: 0; font-size: 16px; }
+#drawer .body { padding: 6px 18px 18px; overflow: auto; flex: 1; }
+#drawer .foot { padding: 12px 18px; border-top: 1px solid var(--line); display: flex; gap: 8px; justify-content: flex-end; }
+fieldset { border: 0; border-top: 1px solid var(--line); margin: 14px 0 0; padding: 12px 0 0; }
+legend { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); padding-right: 8px; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 7px 0; }
+.row label { flex: 1; }
+.row input[type=number] { width: 70px; }
+.row select, .row input[type=number], textarea { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+textarea { width: 100%; min-height: 54px; resize: vertical; }
+.checks { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.sub { font-weight: 600; margin: 12px 0 2px; font-size: 13px; }
+.hint { color: var(--muted); font-size: 12px; margin: 2px 0 6px; }
+@media (max-width: 720px) {
+  .modes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  header, main { padding-left: 16px; padding-right: 16px; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>HochCiv-KI</h1>
+  <span class="chip" id="acc">…</span>
+  <span class="chip" id="srv"></span>
+  <span class="chip" id="eng"></span>
+  <span class="spacer"></span>
+  <button id="open-settings">⚙ Settings</button>
+</header>
+
+<main>
+  <section class="card">
+    <h2>Mode</h2>
+    <div class="modes" id="modes"></div>
+    <div class="summary" id="summary"></div>
+    <div class="note" id="note"></div>
+  </section>
+
+  <section class="card">
+    <h2>Running games</h2>
+    <div class="scroll"><table id="live"></table></div>
+    <div class="scroll" style="margin-top:10px"><table id="mine"></table></div>
+  </section>
+
+  <section class="card">
+    <h2>Game list <span class="spacer"></span><button class="small" id="refresh">Refresh</button></h2>
+    <div class="tabs">
+      <button class="small on" data-tab="lobbies">Live lobbies</button>
+      <button class="small" data-tab="rundenspiele">Rundenspiele</button>
+    </div>
+    <div class="scroll"><table id="list"></table></div>
+  </section>
+
+  <section class="card">
+    <h2>Log</h2>
+    <pre class="log" id="log"></pre>
+  </section>
+</main>
+
+<div id="drawer">
+  <div class="shade" data-close></div>
+  <div class="panel">
+    <div class="head"><h2>Settings</h2><span class="spacer"></span><button class="small" data-close>✕</button></div>
+    <div class="body" id="form">
+      <fieldset><legend>Join all games</legend>
+        <div class="row"><label for="join_live">Live games at once</label><input type="number" id="join_live" min="0" max="8"></div>
+        <div class="row"><label for="join_async">Rundenspiele at once</label><input type="number" id="join_async" min="0" max="30"></div>
+      </fieldset>
+
+      <fieldset><legend>Host games</legend>
+        <div class="row"><label for="host_live">Live lobbies at once</label><input type="number" id="host_live" min="0" max="8"></div>
+        <div class="row"><label for="host_async">Rundenspiele at once</label><input type="number" id="host_async" min="0" max="30"></div>
+        <div class="sub">Live lobby</div>
+        <div class="row"><label for="live.mapKey">Map</label><select id="live.mapKey">
+          <option value="random">Plättchenkarte</option><option value="0">Originalkarte</option><option value="gross">Große Karte</option></select></div>
+        <div class="row"><label for="live.playerCount">Empires</label><select id="live.playerCount"><option>2</option><option>3</option><option>4</option></select></div>
+        <div class="row"><label for="live.kiCount">KI seats</label><select id="live.kiCount"><option>0</option><option>1</option><option>2</option></select></div>
+        <div class="row"><label for="live.difficulty">KI level</label><select id="live.difficulty"><option value="leicht">Leicht</option><option value="mittel">Mittel</option><option value="schwer">Schwer</option></select></div>
+        <div class="row"><label for="live.turnTime">Turn timer</label><select id="live.turnTime">
+          <option value="0">off</option><option value="60">1 min</option><option value="120">2 min</option><option value="180">3 min</option><option value="300">5 min</option><option value="600">10 min</option></select></div>
+        <div class="row"><label for="live.playerBotLimit">Other player-bots</label><select id="live.playerBotLimit"><option value="">no limit</option><option>1</option><option>2</option><option>3</option></select></div>
+        <div class="row"><label for="live.randomCivs">Random nations for everyone</label><input type="checkbox" id="live.randomCivs"></div>
+        <div class="row"><label for="live.isPublic">Public</label><input type="checkbox" id="live.isPublic"></div>
+        <div class="row"><label for="start_after">Start after (minutes)</label><input type="number" id="start_after" min="0" max="120"></div>
+        <div class="row"><label for="min_players">…with at least (players)</label><input type="number" id="min_players" min="2" max="4"></div>
+        <div class="hint">A full lobby starts at once. Seats still free at the start are played by the KI.</div>
+        <div class="sub">Rundenspiel</div>
+        <div class="row"><label for="async.mapKey">Map</label><select id="async.mapKey">
+          <option value="plaettchen">Plättchenkarte</option><option value="0">Originalkarte</option><option value="gross">Große Karte</option></select></div>
+        <div class="row"><label for="async.playerCount">Empires</label><select id="async.playerCount"><option>2</option><option>3</option><option>4</option></select></div>
+        <div class="row"><label for="async.kiCount">KI seats</label><select id="async.kiCount"><option>0</option><option>1</option><option>2</option></select></div>
+        <div class="row"><label for="async.difficulty">KI level</label><select id="async.difficulty"><option value="leicht">Leicht</option><option value="mittel">Mittel</option><option value="schwer">Schwer</option></select></div>
+        <div class="row"><label for="async.civMode">Nations</label><select id="async.civMode"><option value="random">dealt at random</option><option value="fixed">chosen</option></select></div>
+        <div class="row"><label for="async.playerBotLimit">Other player-bots</label><select id="async.playerBotLimit"><option value="">no limit</option><option>1</option><option>2</option><option>3</option></select></div>
+        <div class="row"><label for="async.isPublic">Public</label><input type="checkbox" id="async.isPublic"></div>
+      </fieldset>
+
+      <fieldset><legend>Which games fit</legend>
+        <div class="hint">Used by "Join all games" and the game list. Events, wonders and marathon are never played.</div>
+        <div class="checks" id="maps">
+          <label><input type="checkbox" value="tiles"> Plättchenkarte</label>
+          <label><input type="checkbox" value="original"> Originalkarte</label>
+          <label><input type="checkbox" value="gross"> Große Karte</label>
+          <label><input type="checkbox" value="custom"> Eigene Karte</label>
+        </div>
+        <div class="row"><label for="max_empires">At most empires</label><select id="max_empires"><option>2</option><option>3</option><option>4</option></select></div>
+      </fieldset>
+
+      <fieldset><legend>Chat</legend>
+        <div class="hint">Sent when the bot enters a live lobby (empty = nothing).</div>
+        <textarea id="greeting" maxlength="300"></textarea>
+      </fieldset>
+    </div>
+    <div class="foot"><button data-close>Cancel</button><button class="primary" id="save">Save</button></div>
+  </div>
+</div>
+
+<script>
+const TOKEN = "__PANEL_TOKEN__";
+const MODES = [
+  ["join", "Join all games", "every fitting game, up to a limit"],
+  ["host", "Host games", "keep own lobbies open"],
+  ["select", "Selected games", "only what you pick below"],
+  ["match", "Matchmaking", "ranked queue (bot accounts)"],
+];
+const MAPS = { "0": "Originalkarte", "1": "Originalkarte", original: "Originalkarte", gross: "Große Karte",
+               random: "Plättchenkarte", plaettchen: "Plättchenkarte", eigene: "Eigene Karte", marathon: "Marathon" };
+let S = null, tab = "lobbies", lists = null;
+
+const $ = id => document.getElementById(id);
+const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const mapName = k => MAPS[k] || k || "–";
+
+async function api(path, body) {
+  const r = await fetch(path, { method: body ? "POST" : "GET", headers: { "X-Panel-Token": TOKEN, "Content-Type": "application/json" },
+                                body: body ? JSON.stringify(body) : undefined });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.status);
+  return j;
+}
+function flash(msg) { $("note").textContent = msg; }
+
+function renderModes() {
+  const st = S.settings;
+  $("modes").innerHTML = MODES.map(([k, t, d]) => {
+    const off = k === "match" && !S.account.isBot;
+    return `<button class="mode ${st.mode === k ? "on" : ""}" data-mode="${k}" ${off ? "disabled title='needs a bot account'" : ""}><b>${t}</b><span>${d}</span></button>`;
+  }).join("");
+  const sum = {
+    join: `Joins up to ${st.join_live} live game(s) at once and stays in up to ${st.join_async} Rundenspiel(e).`,
+    host: `Hosts ${st.host_live} live lobby/lobbies (${mapName(st.live.mapKey)}, ${st.live.playerCount} empires) and ${st.host_async} Rundenspiel(e) (${mapName(st.async.mapKey)}, ${st.async.playerCount} empires).`,
+    select: "Joins nothing on its own – pick games in the list below.",
+    match: S.queued ? "In the matchmaking queue." : "Matchmaking: queues again after every game.",
+  }[st.mode];
+  $("summary").textContent = sum + " Games it is already in are always played.";
+  $("note").textContent = S.note || "";
+}
+
+function renderRunning() {
+  const live = S.live;
+  $("live").innerHTML = live.length ? `<tr><th>Live game</th><th>Map</th><th>Players</th><th>Status</th><th class="r">Round</th><th></th></tr>` +
+    live.map(g => {
+      const how = { host: "hosted", join: g.picked ? "picked" : "joined", match: "matchmaking" }[g.kind];
+      const active = !["over", "left", "failed"].includes(g.phase);
+      return `<tr><td>${esc(g.joinCode || g.id)} <span class="why">${how}</span></td><td>${esc(mapName(g.mapKey))}${g.empires ? ` · ${g.empires}` : ""}</td>
+        <td>${esc(g.players.join(", "))}</td>
+        <td><span class="ph ${esc(g.phase)}">${esc(g.phase)}</span> ${g.myTurn ? '<span class="turn">its turn</span>' : ""}<div class="why">${esc(g.note)}</div></td>
+        <td class="r">${g.round ?? ""}</td>
+        <td class="r">${active ? `<button class="small" data-leave="live" data-id="${esc(g.id)}" data-running="${g.phase !== "lobby" && g.phase !== "connecting"}">Leave</button>` : ""}</td></tr>`;
+    }).join("") : `<tr><td class="empty">No live games.</td></tr>`;
+  const mine = S.rundenspiele;
+  $("mine").innerHTML = mine.length ? `<tr><th>Rundenspiel</th><th>Map</th><th>Players</th><th>Status</th><th class="r">Round</th><th></th></tr>` +
+    mine.map(g => `<tr><td>${esc(g.joinCode)} <span class="why">${g.isHost ? "hosted" : "joined"}</span></td><td>${esc(mapName(g.mapKey))}</td>
+      <td>${esc(g.players.join(", "))}</td>
+      <td><span class="ph ${g.status === "playing" ? "playing" : "lobby"}">${esc(g.status)}</span> ${g.yourTurn ? '<span class="turn">its turn</span>' : `<span class="why">${esc(g.waitingFor || "")}</span>`}</td>
+      <td class="r">${g.round || ""}</td>
+      <td class="r"><button class="small" data-leave="async" data-id="${esc(g.id)}" data-running="${g.status === "playing"}">Leave</button></td></tr>`).join("")
+    : `<tr><td class="empty">No Rundenspiele.</td></tr>`;
+}
+
+function renderList() {
+  if (!lists) { $("list").innerHTML = `<tr><td class="empty">Loading…</td></tr>`; return; }
+  const rows = lists[tab];
+  if (!rows.length) { $("list").innerHTML = `<tr><td class="empty">No open ${tab === "lobbies" ? "public lobbies" : "Rundenspiele"}.</td></tr>`; return; }
+  const kind = tab === "lobbies" ? "live" : "async";
+  const head = tab === "lobbies" ? `<tr><th>Code</th><th>Host</th><th>Map</th><th class="r">Seats</th><th>Bots</th><th></th></tr>`
+                                 : `<tr><th>Code</th><th>Host</th><th>Map</th><th class="r">Empires</th><th>Bots</th><th></th></tr>`;
+  $("list").innerHTML = head + rows.map(g => {
+    const seats = tab === "lobbies" ? `${g.players}/${g.seats}` : `${g.empires ?? "?"} (${g.free} free)`;
+    const ok = !g.why || g.why === "left before";
+    return `<tr><td>${esc(g.joinCode)}</td><td>${esc(g.host || "–")}</td><td>${esc(mapName(g.mapKey))}</td><td class="r">${esc(seats)}</td>
+      <td>${g.playerBots ? "allowed" : '<span class="why">off</span>'}</td>
+      <td class="r">${ok ? `<button class="small primary" data-join="${kind}" data-id="${esc(g.id)}">Join</button>` : ""} <div class="why">${esc(g.why || "")}</div></td></tr>`;
+  }).join("");
+}
+
+async function refreshStatus() {
+  try {
+    S = await api("/api/status");
+    $("acc").textContent = (S.account.isBot ? "🤖 " : "") + S.account.name + (S.account.isBot ? " · bot account" : " · regular account");
+    $("acc").className = "chip" + (S.account.isBot ? " bot" : "");
+    $("srv").textContent = S.account.url.replace(/^https?:\/\//, "");
+    $("eng").textContent = `engine ${S.engine} · ${S.agent}`;
+    renderModes(); renderRunning();
+    const lg = $("log"), atEnd = lg.scrollTop + lg.clientHeight >= lg.scrollHeight - 4;
+    lg.textContent = S.log.join("\n");
+    if (atEnd) lg.scrollTop = lg.scrollHeight;
+  } catch (e) { flash("Panel: " + e.message); }
+}
+async function refreshLists() {
+  try { lists = await api("/api/games"); renderList(); } catch (e) { flash("Game list: " + e.message); }
+}
+
+// ---- settings drawer
+function fillForm() {
+  const st = S.settings;
+  document.querySelectorAll("#form [id]").forEach(el => {
+    if (el.id === "maps") return;
+    const v = el.id.split(".").reduce((o, k) => o?.[k], st);
+    if (el.type === "checkbox") el.checked = !!v; else el.value = v ?? "";
+  });
+  document.querySelectorAll("#maps input").forEach(el => { el.checked = st.maps.includes(el.value); });
+}
+function readForm() {
+  const out = { live: {}, async: {} };
+  document.querySelectorAll("#form [id]").forEach(el => {
+    if (el.id === "maps") return;
+    let v = el.type === "checkbox" ? el.checked : el.value;
+    if (el.type !== "checkbox" && v !== "" && /^\d+$/.test(v)) v = +v;
+    if (v === "" && el.id.endsWith("playerBotLimit")) v = null;
+    const [a, b] = el.id.split(".");
+    if (b) out[a][b] = v; else out[a] = v;
+  });
+  out.maps = [...document.querySelectorAll("#maps input:checked")].map(el => el.value);
+  return out;
+}
+function drawer(open) { if (open) fillForm(); $("drawer").classList.toggle("open", open); }
+
+document.addEventListener("click", async e => {
+  const t = e.target.closest("button, [data-close]");
+  if (!t) return;
+  try {
+    if (t.dataset.mode) {
+      S.settings = (await api("/api/settings", { settings: { mode: t.dataset.mode } })).settings;
+      renderModes(); refreshLists();
+    } else if (t.dataset.join) {
+      t.disabled = true;
+      await api("/api/join", { kind: t.dataset.join, id: t.dataset.id });
+      flash("Joining…"); setTimeout(() => { refreshStatus(); refreshLists(); }, 1500);
+    } else if (t.dataset.leave) {
+      if (t.dataset.running === "true" && !confirm("The game is running – leave it anyway? (the KI takes over the seat)")) return;
+      await api("/api/leave", { kind: t.dataset.leave, id: t.dataset.id });
+      setTimeout(refreshStatus, 1000);
+    } else if (t.dataset.tab) {
+      tab = t.dataset.tab;
+      document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b === t));
+      renderList();
+    } else if (t.id === "refresh") {
+      lists = null; renderList(); refreshLists();
+    } else if (t.id === "open-settings") {
+      drawer(true);
+    } else if (t.id === "save") {
+      S.settings = (await api("/api/settings", { settings: readForm() })).settings;
+      drawer(false); renderModes(); refreshLists();
+    } else if ("close" in t.dataset) {
+      drawer(false);
+    }
+  } catch (err) { flash(err.message); t.disabled = false; }
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape") drawer(false); });
+
+refreshStatus().then(refreshLists);
+setInterval(refreshStatus, 2000);
+setInterval(() => { if (!document.hidden) refreshLists(); }, 20000);
+</script>
+</body>
+</html>

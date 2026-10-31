@@ -88,14 +88,21 @@ online on hochciv.de (public lobbies, Rundenspiele, later matchmaking).
   jar; password login for regular accounts), sends no `Origin` header (scripts are allowed
   through), reads `state:update`, sends `action {type, params}` and answers placement.
   Checks the session every 10 minutes and logs in again when it ended.
+- **Control panel** (`panel.py`, 127.0.0.1 only, token per run): modes *join all* (up to N
+  live games / M Rundenspiele), *host* (N live lobbies / M Rundenspiele of its own),
+  *selected* (game list with Join buttons) and *matchmaking*; settings saved in
+  `runs/online-settings.json`.
 - **Lobbies:** polls `GET /api/public-sessions`, joins lobbies that fit the scope (player
   count, no events/wonders/marathon, current version) and allow player-bots
   (`playerBots`, `playerBotsFree`), writes a short chat line saying it
-  is an AI, and plays within the turn timer.
+  is an AI, and plays within the turn timer. One socket per live game (the server binds a
+  socket to one session); one Brain for all games, one decision at a time.
+- **Hosting:** `POST /api/sessions`, starts when full or after X minutes with at least Y
+  players, pings the lobby so it doesn't time out; Rundenspiele via `POST /api/async`.
 - **Rundenspiele:** REST list/join (only games with `config.playerBots`; a refused join is
   not retried) plus `async:open`/`async:action`/`async:place`.
-- **Matchmaking:** `--matchmaking`, bot accounts only; joins the queue on every new socket
-  (start, after each game, reconnect) and after a cancelled match.
+- **Matchmaking:** bot accounts only; in the queue while the mode is on and no match game
+  runs.
 - Version guard: if the server's `APP_VERSION` differs from the checkpoint's version, the
   client logs a warning and plays anyway ("always current").
 - Tested on **staging** (staging.hochciv.de, its own bot account) before production.
@@ -134,7 +141,7 @@ online on hochciv.de (public lobbies, Rundenspiele, later matchmaking).
 | M4 | Done: PPO 1v1, 0.559 ± 0.040 on 600 fresh games (BC on the same games 0.523) |
 | M5 | Done (v1 goal): `checkpoints/v1.pt` beats KI schwer in every v1 mode – 1v1 tile map 0.610 ± 0.055, 4p tile map 0.310 ± 0.059 (fair 0.25), 3p 0.472 (fair 0.333); details in README. PPO keeps training |
 | M6 | Live games done and tested on staging (guest host + bot, no rejected actions); Rundenspiele implemented but untested: they need a second human account on staging |
-| M7 | Client switched to bot accounts (token login, player-bot rules, matchmaking for bots); bot accounts live on hochciv.de. Needs a bot token to go online |
+| M7 | Client switched to bot accounts (token login, player-bot rules, matchmaking for bots); control panel with modes join/host/selected/matchmaking. Bot accounts live on hochciv.de. Needs a bot token to go online |
 
 v1 criterion for more than two empires: the fair share is 1/n, so "beats KI schwer" means a
 win share significantly above 1/n (95 % CI above 0.25 in 4p), aiming at 10 % above it.
