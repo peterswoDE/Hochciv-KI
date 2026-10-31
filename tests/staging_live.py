@@ -1,6 +1,6 @@
-"""End-to-end test of a live game on staging: a guest host opens a public lobby, the bot
-(the account in online-staging.env) finds it, joins and plays; the host plays its own seat
-with the same engine. Staging only.
+"""End-to-end test of a live game on staging: a guest host opens a public lobby that allows
+player-bots, the bot (HOCHCIV_TOKEN in online-staging.env, else the password account there)
+finds it, joins and plays; the host plays its own seat with the same engine. Staging only.
 
     python -m tests.staging_live [--map plaettchen] [--agent teacher]
 """
@@ -27,7 +27,8 @@ class Host(Client):
     def open_lobby(self, map_key, players):
         cid = secrets.token_hex(16)
         r = self.http.post(f"{self.url}/api/sessions", timeout=20, json={
-            "config": {"mapKey": map_key, "playerCount": players, "kiCount": 0, "isPublic": True},
+            "config": {"mapKey": map_key, "playerCount": players, "kiCount": 0, "isPublic": True,
+                       "playerBots": True},
             "host": {"name": "KI-Testhost", "clientId": cid, "civ": "random", "ability": "random"}})
         r.raise_for_status()
         b = r.json()
@@ -56,8 +57,9 @@ def main():
     lobby = host.open_lobby(args.map, 2)
     log.info("lobby %s open", lobby["joinCode"])
 
-    bot = Client(url, env["HOCHCIV_USER"], env["HOCHCIV_PASSWORD"], Brain(args.agent), rundenspiele=False,
-                 name="HochCiv-KI [Bot]")
+    token = env.get("HOCHCIV_TOKEN")
+    bot = Client(url, env.get("HOCHCIV_USER"), env.get("HOCHCIV_PASSWORD"), Brain(args.agent), rundenspiele=False,
+                 name=None if token else "HochCiv-KI [Bot]", token=token)
     result = {}
     t = threading.Thread(target=lambda: result.setdefault("bot", bot.run(once=True)), daemon=True)
     t.start()

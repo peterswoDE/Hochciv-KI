@@ -4,16 +4,23 @@
     python -m hochciv_ki.online.client --config online.env --agent teacher --once
 
 online.env (git-ignored, KEY=VALUE):
-    HOCHCIV_URL=https://staging.hochciv.de
+    HOCHCIV_URL=https://hochciv.de
+    HOCHCIV_TOKEN=hcbot_...        # bot account (account page, tab "Meine Bots")
+or, for a regular account (only where bot accounts don't exist yet):
     HOCHCIV_USER=...
     HOCHCIV_PASSWORD=...
+
+A bot account plays as a player-bot (multiplayer-server docs/reference/bot-accounts.md): it
+only joins lobbies and Rundenspiele whose host allows player-bots and that have room for one,
+and plays under its account name.
 
 What it does, in a loop:
   * Rundenspiele: joins open public games that fit (2–4 empires, no events/wonders/marathon,
     current engine version) and plays every game where it is its turn.
   * Live lobbies: joins an open public lobby that fits, says in the chat that it is an AI,
     places its start tile and plays the game to the end. One live game at a time.
-  * Matchmaking: only with --matchmaking (off until the server has a bot account type).
+  * Matchmaking: only with --matchmaking (bot accounts only: humans opt in to play bots).
+    Instead of public lobbies; back in the queue after every game.
 
 Every move is computed by the local bridge worker on the server's state: the candidate the
 agent picks is recorded as engine calls and sent as `action { type, params }`.
@@ -106,9 +113,10 @@ class Brain:
 
 class Client:
     def __init__(self, url, user, password, brain: Brain, live=True, rundenspiele=True, matchmaking=False,
-                 name=None):
+                 name=None, token=None):
         self.url = url.rstrip("/")
-        self.user, self.password = user, password
+        self.user, self.password, self.token = user, password, token
+        self.is_bot = False          # logged in as a bot account (set by login)
         self.brain = brain
         self.live, self.async_on, self.matchmaking = live, rundenspiele, matchmaking
         self.name = name or user
@@ -120,17 +128,45 @@ class Client:
         self.async_open = None       # id of the opened Rundenspiel
         self.last_async_poll = 0.0
         self.async_every = 60
+        self.async_refused = set()   # Rundenspiele that refused us
         self.server_version = None
+        self.last_auth_check = 0.0
 
     # ---------------------------------------------------------------- connection
     def login(self):
-        r = self.http.post(f"{self.url}/api/auth/login", json={"username": self.user, "password": self.password}, timeout=20)
+        if self.token:
+            # no Origin header: the server's origin check lets non-browser bot logins through
+            r = self.http.post(f"{self.url}/api/auth/bot", headers={"Authorization": f"Bearer {self.token}"}, timeout=20)
+            if r.status_code in (401, 403):
+                raise RuntimeError(f"bot login refused: {r.json().get('error', r.status_code)}")
+        else:
+            r = self.http.post(f"{self.url}/api/auth/login", json={"username": self.user, "password": self.password}, timeout=20)
         r.raise_for_status()
         body = r.json()
         if not body.get("ok", True) or body.get("mfa") or body.get("needs"):
             raise RuntimeError(f"login needs more than a password: {body}")
         me = self.http.get(f"{self.url}/api/auth/me", timeout=20).json()
-        log.info("logged in as %s", (me.get("user") or me).get("username", self.user))
+        me = me.get("user") or me
+        self.user = me.get("username", self.user)
+        self.is_bot = me.get("accountType") == "bot"
+        if self.is_bot:
+            self.name = self.user        # a player-bot plays under its account name
+        self.name = self.name or self.user
+        log.info("logged in as %s (%s)", self.user, "bot account" if self.is_bot else "regular account")
+
+    def check_login(self):
+        """Sessions expire, and a renewed token or a banned owner ends them: log in again (the
+        bot login fails loudly when the token no longer works)."""
+        if self.http.get(f"{self.url}/api/auth/me", timeout=20).status_code != 401:
+            return
+        log.warning("session ended, logging in again")
+        self.login()
+        if not self.live_game:
+            try:
+                self.sio.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+            self.connect()
 
     def connect(self):
         cookie = "; ".join(f"{c.name}={c.value}" for c in self.http.cookies)
@@ -163,9 +199,10 @@ class Client:
     # ---------------------------------------------------------------- main loop
     def run(self, once=False):
         self.login()
+        if self.matchmaking and not self.is_bot:
+            raise RuntimeError("matchmaking is for bot accounts only (human MMR)")
         self.connect()
-        if self.matchmaking:
-            self.call("match:join", {})
+        self.last_auth_check = time.time()
         last_lobby_poll = 0.0
         while True:
             try:
@@ -174,6 +211,9 @@ class Client:
             except queue.Empty:
                 pass
             now = time.time()
+            if now - self.last_auth_check > 600:
+                self.last_auth_check = now
+                self.guarded(self.check_login)
             if self.live and not self.live_game and not self.matchmaking and now - last_lobby_poll > 15:
                 last_lobby_poll = now
                 self.guarded(self.try_join_lobby)
@@ -214,15 +254,27 @@ class Client:
             self.drain()
             self.guarded(self.async_turn, self._async_view)
         elif ev == "match:found":
+            log.info("match found: %s", ", ".join(p.get("name", "?") for p in data.get("players", [])))
             self.call("match:accept", {"matchId": data["matchId"]})
+        elif ev == "match:cancelled":
+            log.info("match cancelled: %s", (data or {}).get("reason"))
+            if self.matchmaking and not (data or {}).get("requeued") and not self.live_game:
+                self.guarded(self.join_queue)
         elif ev == "match:ready":
             self.enter_live(data["sessionId"], data["password"], data["clientId"])
         elif ev == "connect" and self.live_game:
             # reconnect: bind the seat again
             self.call("session:connect", {"sessionId": self.live_game["sessionId"], "password": self.live_game["password"],
                                           "clientId": self.live_game["clientId"]})
+        elif ev == "connect" and self.matchmaking:
+            # a new socket (start, after a game, reconnect): the queue entry is per socket
+            self.guarded(self.join_queue)
         elif ev == "turn:timeout":
             log.warning("turn timed out")
+
+    def join_queue(self):
+        res = self.call("match:join", {})
+        log.info("matchmaking: %s", "match pending" if res.get("pending") else f"in the queue ({res.get('queued')} waiting)")
 
     def guarded(self, fn, *args):
         try:
@@ -241,6 +293,8 @@ class Client:
             if s.get("status") != "lobby" or s.get("playersCount", 0) >= s.get("maxPlayers", 0):
                 continue
             if str(s.get("mapKey")) not in ALLOWED_MAPS:
+                continue
+            if self.is_bot and (not s.get("playerBots") or s.get("playerBotsFree") == 0):
                 continue
             client_id = secrets.token_hex(16)
             try:
@@ -399,9 +453,16 @@ class Client:
                 continue
             if config_ok(s.get("config") or {}, len(s.get("seats") or [])) or not s.get("freeSeats"):
                 continue
+            if (self.is_bot and not (s.get("config") or {}).get("playerBots")) or s["id"] in self.async_refused:
+                continue
             r = self.http.post(f"{self.url}/api/async/{s['id']}/join", json={"civ": "random", "ability": "random"}, timeout=20)
             if r.ok:
                 log.info("joined Rundenspiel %s", s["id"])
+            elif r.status_code < 500:
+                # e.g. no room for another player-bot: don't ask again every minute
+                self.async_refused.add(s["id"])
+                err = r.json().get("error") if r.headers.get("content-type", "").startswith("application/json") else None
+                log.info("Rundenspiel %s refused us: %s", s["id"], err or r.status_code)
         for s in lst.get("mine", []):
             if s.get("yourTurn") or s.get("status") == "placement":
                 self.open_async(s["id"])
@@ -442,16 +503,16 @@ def main():
     ap.add_argument("--no-live", action="store_true")
     ap.add_argument("--no-rundenspiele", action="store_true")
     ap.add_argument("--matchmaking", action="store_true",
-                    help="enter ranked matchmaking (keep off until the bot account type exists)")
+                    help="play ranked matchmaking instead of public lobbies (bot accounts only)")
     ap.add_argument("--once", action="store_true", help="stop after one live game")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     env = read_env(args.config)
     brain = Brain(args.agent)
     log.info("engine %s, agent %s", brain.version, args.agent)
-    Client(env["HOCHCIV_URL"], env["HOCHCIV_USER"], env["HOCHCIV_PASSWORD"], brain,
+    Client(env["HOCHCIV_URL"], env.get("HOCHCIV_USER"), env.get("HOCHCIV_PASSWORD"), brain,
            live=not args.no_live, rundenspiele=not args.no_rundenspiele, matchmaking=args.matchmaking,
-           name=env.get("HOCHCIV_NAME")).run(once=args.once)
+           name=env.get("HOCHCIV_NAME"), token=env.get("HOCHCIV_TOKEN")).run(once=args.once)
 
 
 if __name__ == "__main__":

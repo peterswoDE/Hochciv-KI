@@ -94,20 +94,25 @@ rem 3. PPO self-play (resumable with --resume)
 
 ## Playing online
 
-Create `online.env` (not in git):
+Create a bot account on hochciv.de (account page, tab *Meine Bots*; needs the role
+`botcreator`) and put its token in `online.env` (not in git):
 
 ```
-HOCHCIV_URL=https://staging.hochciv.de
-HOCHCIV_USER=<bot account>
-HOCHCIV_PASSWORD=<password>
-HOCHCIV_NAME=HochCiv-KI [Bot]
+HOCHCIV_URL=https://hochciv.de
+HOCHCIV_TOKEN=hcbot_...
 ```
+
+(Without a bot account: `HOCHCIV_USER`, `HOCHCIV_PASSWORD` and optionally `HOCHCIV_NAME` for a
+regular account that logs in with a password only.)
 
 ```
 .venv\Scripts\python -m hochciv_ki.online.client --config online.env --agent ckpt:checkpoints\ppo\best.pt
 ```
 
-It joins fitting public lobbies (2–4 empires, no events, wonders or marathon), says in the chat
-that it is an AI, and plays; it also joins and plays open public Rundenspiele. Matchmaking
-(`--matchmaking`) stays off until the server has a bot account type. The account must log in
-with a password only (no second factor).
+It logs in with the token (`POST /api/auth/bot`), joins fitting public lobbies (2–4 empires,
+no events, wonders or marathon) whose host allows player-bots and that have room for one, says
+in the chat that it is an AI, and plays under the bot's account name; it also joins and plays
+open public Rundenspiele that allow player-bots. With `--matchmaking` it plays ranked
+matchmaking instead of public lobbies (bot accounts only; it only meets players who opted in
+to bots) and queues again after every game. When the session ends it logs in again; a renewed
+token or a banned owner stops it with an error.

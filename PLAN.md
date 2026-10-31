@@ -12,8 +12,8 @@ online on hochciv.de (public lobbies, Rundenspiele, later matchmaking).
 | Strength goal | v1: beat the best JS KI (`ki.js`, level `schwer`). Long term: stronger than strong human players |
 | Training data | **No human data.** Only imitation of the JS KI plus self-play |
 | Engine | Always the current engine, loaded read-only from `../multiplayer-server/HochCiv/js` (exactly what the server runs). Never edited from here |
-| Online identity | A regular account at first, with a name that marks it as a bot (e.g. `HochCiv-NN [KI]`). A dedicated bot account type in prod comes later |
-| Online activities | Join public lobbies, Rundenspiele, matchmaking. **Matchmaking stays disabled** until the bot account type exists, so human MMR is not affected |
+| Online identity | A bot account (server account type `bot`, token login, 🤖 badge, own leaderboard); a regular account still works where bots don't exist |
+| Online activities | Join public lobbies and Rundenspiele that allow player-bots, matchmaking (`--matchmaking`, only with players who opted in to bots) |
 | Language | English (code, comments, docs) |
 | Other projects | Read-only. Changes to Hochciv, multiplayer-server or HochCiv-Android only after asking |
 
@@ -84,15 +84,18 @@ online on hochciv.de (public lobbies, Rundenspiele, later matchmaking).
   in 1v1 and in 4-player games.
 
 ### 6. Online client (`hochciv_ki/online/`)
-- Python `python-socketio` client: logs in (`POST /api/auth/login`, cookie jar), sends no
-  `Origin` header (scripts are allowed through), reads `state:update`, sends
-  `action {type, params}` and answers placement.
+- Python `python-socketio` client: logs in with the bot token (`POST /api/auth/bot`, cookie
+  jar; password login for regular accounts), sends no `Origin` header (scripts are allowed
+  through), reads `state:update`, sends `action {type, params}` and answers placement.
+  Checks the session every 10 minutes and logs in again when it ended.
 - **Lobbies:** polls `GET /api/public-sessions`, joins lobbies that fit the scope (player
-  count, no events/wonders/marathon, current version), writes a short chat line saying it
+  count, no events/wonders/marathon, current version) and allow player-bots
+  (`playerBots`, `playerBotsFree`), writes a short chat line saying it
   is an AI, and plays within the turn timer.
-- **Rundenspiele:** REST list/join plus `async:open`/`async:action`/`async:place`.
-- **Matchmaking:** implemented behind a switch that is **off** until the bot account type
-  exists.
+- **Rundenspiele:** REST list/join (only games with `config.playerBots`; a refused join is
+  not retried) plus `async:open`/`async:action`/`async:place`.
+- **Matchmaking:** `--matchmaking`, bot accounts only; joins the queue on every new socket
+  (start, after each game, reconnect) and after a cancelled match.
 - Version guard: if the server's `APP_VERSION` differs from the checkpoint's version, the
   client logs a warning and plays anyway ("always current").
 - Tested on **staging** (staging.hochciv.de, its own bot account) before production.
@@ -131,7 +134,7 @@ online on hochciv.de (public lobbies, Rundenspiele, later matchmaking).
 | M4 | Done: PPO 1v1, 0.559 ± 0.040 on 600 fresh games (BC on the same games 0.523) |
 | M5 | Done (v1 goal): `checkpoints/v1.pt` beats KI schwer in every v1 mode – 1v1 tile map 0.610 ± 0.055, 4p tile map 0.310 ± 0.059 (fair 0.25), 3p 0.472 (fair 0.333); details in README. PPO keeps training |
 | M6 | Live games done and tested on staging (guest host + bot, no rejected actions); Rundenspiele implemented but untested: they need a second human account on staging |
-| M7 | Waiting for the bot account on hochciv.de |
+| M7 | Client switched to bot accounts (token login, player-bot rules, matchmaking for bots); bot accounts live on hochciv.de. Needs a bot token to go online |
 
 v1 criterion for more than two empires: the fair share is 1/n, so "beats KI schwer" means a
 win share significantly above 1/n (95 % CI above 0.25 in 4p), aiming at 10 % above it.
