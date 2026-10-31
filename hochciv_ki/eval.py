@@ -79,10 +79,11 @@ def agent_factory(spec: str, device="cuda"):
         return TeacherAgent
     if spec == "kiturn":
         return KiTurnAgent
-    if spec.startswith("ckpt:"):
+    if spec.startswith("ckpt:") or spec.startswith("ckpts:"):
+        # ckpt: greedy, ckpts: samples from the policy
         from .model import load_agent
-        path = spec[5:]
-        return lambda: load_agent(path, device=device)
+        greedy, path = spec.startswith("ckpt:"), spec.split(":", 1)[1]
+        return lambda: load_agent(path, device=device, greedy=greedy)
     raise ValueError(spec)
 
 

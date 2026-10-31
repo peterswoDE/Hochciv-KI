@@ -58,6 +58,10 @@ Baselines (engine v98, tile map, against KI schwer; score = share of wins, fair 
 | teacher | 0.525 ± 0.069 (200 games) | 0.292 ± 0.082 (120 games) |
 | BC network (730k samples, 6 epochs) | 0.540 ± 0.069 (200 games) | 0.283 ± 0.081 (120 games) |
 
+M4 (1v1): after 87 PPO iterations (about 14 000 games), on 600 fresh games (seeds 70000–70299)
+against KI schwer: **PPO 0.559 ± 0.040**, BC on the same games 0.523 ± 0.040. Sampling from the
+policy instead of the greedy choice plays about the same (0.575 vs 0.573 on 200 games).
+
 ## Training
 
 ```
