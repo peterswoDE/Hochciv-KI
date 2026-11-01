@@ -120,7 +120,8 @@ online on hochciv.de (public lobbies, Rundenspiele, later matchmaking).
 | M5 | 3–4 players, tile map/custom maps | **v1 goal:** beats `schwer` in all v1 modes |
 | M6 | Online client on staging (lobbies, Rundenspiele) | Plays full games on staging |
 | M7 | Production with the bot account | Joins public lobbies on hochciv.de |
-| later | Learned placement, events/wonders/marathon, matchmaking with bot account type, stronger search (e.g. MCTS over the engine) | Superhuman strength |
+| M8 | v2: every game mode (wonders, events easy/hard, marathon incl. custom marathon maps, 5–8 empires) | Beats KI schwer (score above the fair share) in the v2 suite (`eval_modes --suite v2`) |
+| later | Learned placement and marathon draft, matchmaking with bot account type, stronger search (e.g. MCTS over the engine) | Superhuman strength |
 
 ## Risks
 - **Simulation speed:** `ki.js` itself simulates many copies, so it is slow as a teacher.
@@ -145,3 +146,9 @@ online on hochciv.de (public lobbies, Rundenspiele, later matchmaking).
 
 v1 criterion for more than two empires: the fair share is 1/n, so "beats KI schwer" means a
 win share significantly above 1/n (95 % CI above 0.25 in 4p), aiming at 10 % above it.
+
+## Status (2026-11-01)
+
+| # | Status |
+|---|---|
+| M8 | Layout v2 and the bridge modes done; v1 widened to `checkpoints/v1w.pt` (baseline in README). PPO `--mix v2` running in `checkpoints/ppo2` (log `ppo2.log`). Online client still refuses events/wonders/marathon/>4 empires: enable once the v2 model passes the suite (marathon needs the online draft) |

@@ -31,6 +31,8 @@ Plays complete games with a random agent against the JS KI and bots on tile, fix
 | `hochciv_ki/env.py` | Observations as numpy arrays, agents, `play_game` |
 | `hochciv_ki/pool.py` | Pool of bridge workers (one Node process per thread) |
 | `hochciv_ki/eval.py` | Paired evaluation against the JS KI and bots |
+| `hochciv_ki/eval_modes.py` | Evaluation over a suite of game modes (wonders, events, marathon, 5–8 empires) |
+| `hochciv_ki/widen.py` | Carries a network over to a new observation layout (inputs matched by name) |
 | `hochciv_ki/model.py` | The network (residual CNN over the map, transformer over candidates) |
 | `hochciv_ki/data.py` | Imitation data (labels from the JS KI planner) |
 | `hochciv_ki/train_bc.py` | Behaviour cloning |
@@ -75,6 +77,39 @@ seeds 80000+, against KI schwer:
 | 3 players, big map (180) | **0.472 ± 0.073** | 0.333 |
 | 4 players, tile map (240) | 0.310 ± 0.059 | 0.250 |
 | 4 players, random custom map (160) | 0.338 ± 0.073 | 0.250 |
+
+## v2: every game mode
+
+Observation layout v2 (`bridge/features.js`) covers every mode the server offers: 8 seat
+slots (5–8 empires), the barbarians on their own map planes, wonders (pool, built, owned,
+cost, wonder candidates by name), events (mode, this round's event, the next one with the
+oracle, nuclear ban) and the two drafted marathon abilities. Every input has a name;
+`widen.py` copies the weights of a network to a new layout by name and starts new inputs at
+zero weight, and `load_net` does that by itself for older checkpoints (v1.pt still works).
+The widened v1 plays exactly like v1 (max logit difference 5e-4 over 640 decisions).
+
+Bridge game options: `events`, `eventMode` (`hard`/`easy`), `wonders`; maps `marathon` (24 × 36,
+4 empires, abilities drafted like the JS KI) and `customgen-marathon` (random custom map with the
+marathon rules).
+
+```
+.venv\Scripts\python -m hochciv_ki.eval_modes --agent ckpt:checkpoints1w.pt --suite v2
+.venv\Scripts\python -m hochciv_ki.train_ppo --init checkpoints1w.pt --out checkpoints\ppo2 --mix v2 --lr 3e-5 --target-kl 0.05 --imit 0.1 --imit-half 150
+```
+
+Baseline before v2 training: the widened v1 model against KI schwer (seeds 90000+):
+
+| Mode | v1w | Fair share |
+|---|---|---|
+| 2p, tile map, wonders (120 games) | 0.575 ± 0.089 | 0.500 |
+| 2p, tile map, events hard (120) | 0.492 ± 0.090 | 0.500 |
+| 2p, original map, wonders, events easy (80) | 0.613 ± 0.107 | 0.500 |
+| 3p, custom map, wonders, events hard (60) | 0.483 ± 0.128 | 0.333 |
+| 4p, tile map, wonders, events hard (60) | 0.350 ± 0.122 | 0.250 |
+| 6p, tile map (60) | 0.200 ± 0.102 | 0.167 |
+| 8p, custom map, wonders (48) | 0.135 ± 0.096 | 0.125 |
+| 4p, marathon (40) | 0.250 ± 0.136 | 0.250 |
+| 3p, custom marathon map, wonders (30) | 0.500 ± 0.182 | 0.333 |
 
 ## Training
 
