@@ -4,6 +4,7 @@ not running. Once it is the bot's turn the bot's client is started and must play
 on launch; then both play to the end. Staging only.
 
     python -m tests.staging_async [--map plaettchen] [--agent teacher] [--timeout 1200]
+    python -m tests.staging_async --map marathon --players 4 --ki 2 --wonders --events easy
 """
 from __future__ import annotations
 
@@ -31,6 +32,10 @@ def main():
     ap.add_argument("--map", default="plaettchen")
     ap.add_argument("--agent", default="teacher")
     ap.add_argument("--timeout", type=int, default=1200)
+    ap.add_argument("--players", type=int, default=2, help="empires")
+    ap.add_argument("--ki", type=int, default=0, help="KI seats")
+    ap.add_argument("--wonders", action="store_true")
+    ap.add_argument("--events", choices=["off", "easy", "hard"], default="off")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     env = read_env("online-staging.env")
@@ -40,7 +45,8 @@ def main():
 
     brain = Brain("teacher")
     host = Manager(Account(url, env["HOCHCIV_USER"], env["HOCHCIV_PASSWORD"]), brain, settings={"host": {"on": True, "setups": [
-        {"id": "test", "kind": "async", "count": 1, "mapKey": args.map, "playerCount": 2, "kiCount": 0, "civMode": "random"}]}})
+        {"id": "test", "kind": "async", "count": 1, "mapKey": args.map, "playerCount": args.players, "kiCount": args.ki,
+        "civMode": "random", "wonders": args.wonders, "events": args.events}]}})
     host.start()
     hacc = host.acc
 

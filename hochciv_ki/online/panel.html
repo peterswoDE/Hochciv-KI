@@ -41,7 +41,7 @@ td.r, th.r { text-align: right; }
 .why { color: var(--muted); font-size: 12px; }
 .why.hard { color: var(--bad); }
 .ph { font-size: 12px; border-radius: 5px; padding: 1px 7px; background: var(--chip); white-space: nowrap; }
-.ph.playing, .ph.placement { color: var(--ok); }
+.ph.playing, .ph.placement, .ph.draft { color: var(--ok); }
 .ph.lobby, .ph.connecting, .ph.setup { color: var(--warn); }
 .ph.failed { color: var(--bad); }
 .turn { color: var(--ok); font-weight: 600; }
@@ -139,14 +139,19 @@ textarea { width: 100%; min-height: 54px; resize: vertical; }
 const TOKEN = "__PANEL_TOKEN__";
 const MAPS = { "0": "Originalkarte", "1": "Originalkarte", original: "Originalkarte", gross: "Große Karte",
                random: "Plättchenkarte", plaettchen: "Plättchenkarte", eigene: "Eigene Karte", marathon: "Marathon" };
-const HOST_MAPS = { live: ["random", "0", "gross"], async: ["plaettchen", "0", "gross"] };
-const MAP_GROUPS = [["tiles", "Plättchenkarte"], ["original", "Originalkarte"], ["gross", "Große Karte"], ["custom", "Eigene Karte"]];
+const HOST_MAPS = { live: ["random", "0", "gross", "marathon"], async: ["plaettchen", "0", "gross", "marathon"] };
+const MAP_GROUPS = [["tiles", "Plättchenkarte"], ["original", "Originalkarte"], ["gross", "Große Karte"], ["custom", "Eigene Karte"], ["marathon", "Marathon"]];
+const EVENTS = [["off", "no events"], ["easy", "easy"], ["hard", "hard"]];
+const MAX_EMPIRES = 8;
+// empires a hosted game may have on a map (mapLimits in the engine)
+const hostEmpires = k => k === "marathon" ? [4, 4] : k === "0" || k === "gross" ? [2, 4] : [2, MAX_EMPIRES];
 const TIMERS = [[0, "off"], [60, "1 min"], [120, "2 min"], [180, "3 min"], [300, "5 min"], [600, "10 min"]];
 let S = null, cfg = null, tab = "lobbies", lists = null, saveTimer = null, dirty = false;
 
 const $ = id => document.getElementById(id);
 const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const mapName = k => MAPS[k] || k || "–";
+const modeLine = g => g.mode ? `<div class="why">${esc(g.mode)}</div>` : "";
 const opts = (list, cur) => list.map(([v, t]) => `<option value="${esc(v)}" ${String(v) === String(cur ?? "") ? "selected" : ""}>${esc(t)}</option>`).join("");
 const range = (a, b) => Array.from({ length: Math.max(0, b - a + 1) }, (_, i) => [a + i, String(a + i)]);
 
@@ -171,13 +176,15 @@ function setupHtml(x, i) {
     <div class="top">
       ${f("kind", opts([["live", "Live lobby"], ["async", "Rundenspiel"]], x.kind))}
       ${f("mapKey", opts(HOST_MAPS[x.kind].map(k => [k, MAPS[k]]), x.mapKey))}
-      ${f("playerCount", opts(range(2, 4).map(([v]) => [v, v + " empires"]), x.playerCount))}
+      ${f("playerCount", opts(range(...hostEmpires(x.mapKey)).map(([v]) => [v, v + " empires"]), x.playerCount))}
       <span class="count">×<input type="number" data-s="${i}" data-f="count" value="${x.count}" min="0" max="${live ? 8 : 30}"></span>
       <button class="icon" data-del="${i}" title="Remove">✕</button>
     </div>
     <details ${x._open ? "open" : ""} data-det="${i}"><summary>${esc(setupLine(x))}</summary>
       <div class="grid">
         <span>KI seats</span>${f("kiCount", opts(range(0, x.playerCount - 2), x.kiCount))}
+        <span>Wonders</span><input type="checkbox" data-s="${i}" data-f="wonders" ${x.wonders ? "checked" : ""}>
+        <span>Events</span>${f("events", opts(EVENTS, x.events))}
         <span>🔥 Ranked <span class="why">(MMR counts, KI on Schwer)</span></span><input type="checkbox" data-s="${i}" data-f="ranked" ${x.ranked ? "checked" : ""}>
         <span>KI level</span><select data-s="${i}" data-f="difficulty" ${x.ranked ? "disabled" : ""}>${opts([["leicht", "Leicht"], ["mittel", "Mittel"], ["schwer", "Schwer"]], x.difficulty)}</select>
         ${live ? `<span>Turn timer</span>${f("turnTime", opts(TIMERS, x.turnTime))}
@@ -192,6 +199,8 @@ function setupHtml(x, i) {
 function setupLine(x) {
   const bits = x.ranked ? ["🔥 ranked"] : [];
   bits.push(`${x.kiCount} KI (${x.difficulty})`);
+  if (x.wonders) bits.push("wonders");
+  if (x.events && x.events !== "off") bits.push(`events ${x.events}`);
   if (x.kind === "live") bits.push(x.turnTime ? `timer ${x.turnTime / 60} min` : "no timer");
   else bits.push(x.civMode === "random" ? "random nations" : "chosen nations");
   bits.push(x.isPublic ? "public" : "private");
@@ -208,7 +217,10 @@ function renderSettings() {
       <div class="row"><label>${cb("join.async", j.async, "Rundenspiele")}</label><span class="why">at once</span>${num("join.max_async", j.max_async, 0, 30)}</div>
       <div class="why" style="margin-top:8px">Maps</div>
       <div class="checks">${MAP_GROUPS.map(([k, t]) => `<label><input type="checkbox" data-map="${k}" ${j.maps.includes(k) ? "checked" : ""}> ${t}</label>`).join("")}</div>
-      <div class="row"><span>Empires</span><select data-k="join.min_empires">${opts(range(2, 4), j.min_empires)}</select> – <select data-k="join.max_empires">${opts(range(2, 4), j.max_empires)}</select></div>
+      <div class="row"><span>Empires</span><select data-k="join.min_empires">${opts(range(2, MAX_EMPIRES), j.min_empires)}</select> – <select data-k="join.max_empires">${opts(range(2, MAX_EMPIRES), j.max_empires)}</select></div>
+      <div class="row">${cb("join.wonders", j.wonders, "Games with wonders")}</div>
+      <div class="why">Events</div>
+      <div class="checks">${EVENTS.map(([k, t]) => `<label><input type="checkbox" data-ev="${k}" ${j.events.includes(k) ? "checked" : ""}> ${t}</label>`).join("")}</div>
       <div class="row"><span>Ranked</span><select data-k="join.ranked">${opts([["any", "any"], ["unranked", "unranked only"], ["ranked", "ranked only"]], j.ranked)}</select></div>
       <div class="row">${cb("join.ki", j.ki, "Games with KI seats")}</div>
       <div class="row">${cb("join.bot_hosts", j.bot_hosts, "Games hosted by other bots")}</div>
@@ -220,7 +232,7 @@ function renderSettings() {
     <div class="body">
       ${h.setups.map(setupHtml).join("") || `<div class="empty">No setups.</div>`}
       <div class="adds"><button class="small" data-add="live">+ Live lobby</button><button class="small" data-add="async">+ Rundenspiel</button></div>
-      <div class="row"><span>Live: start after</span>${num("host.start_after", h.start_after, 0, 120)}<span class="why">min with ≥</span>${num("host.min_players", h.min_players, 2, 4)}<span class="why">players</span></div>
+      <div class="row"><span>Live: start after</span>${num("host.start_after", h.start_after, 0, 120)}<span class="why">min with ≥</span>${num("host.min_players", h.min_players, 2, MAX_EMPIRES)}<span class="why">players</span></div>
       <div class="why">A full lobby starts at once; free seats at the start are played by the KI.</div>
     </div>
   </div>
@@ -269,13 +281,19 @@ $("form").addEventListener("change", e => {
   if (el.dataset.k) { setPath(el.dataset.k, val); changed(el.dataset.k.endsWith(".on") || el.dataset.k === "match"); }
   else if (el.dataset.map) {
     cfg.join.maps = [...$("form").querySelectorAll("[data-map]:checked")].map(x => x.dataset.map); changed(false);
+  } else if (el.dataset.ev) {
+    cfg.join.events = [...$("form").querySelectorAll("[data-ev]:checked")].map(x => x.dataset.ev); changed(false);
   } else if (el.dataset.s !== undefined) {
     const x = cfg.host.setups[+el.dataset.s], f = el.dataset.f;
     x[f] = f === "playerBotLimit" ? (el.value === "" ? null : +el.value) : val;
     if (f === "kind") x.mapKey = HOST_MAPS[x.kind][0];
-    if (f === "playerCount") x.kiCount = Math.min(x.kiCount, x.playerCount - 2);
+    if (f === "kind" || f === "mapKey") {
+      const [lo, hi] = hostEmpires(x.mapKey);
+      x.playerCount = Math.max(lo, Math.min(hi, x.playerCount));
+    }
+    if (f === "kind" || f === "mapKey" || f === "playerCount") x.kiCount = Math.min(x.kiCount, x.playerCount - 2);
     if (f === "ranked" && x.ranked) x.difficulty = "schwer";
-    changed(["kind", "playerCount", "kiCount", "difficulty", "turnTime", "civMode", "isPublic", "ranked"].includes(f));
+    changed(["kind", "mapKey", "playerCount", "kiCount", "difficulty", "turnTime", "civMode", "isPublic", "ranked", "wonders", "events"].includes(f));
   }
 });
 $("form").addEventListener("toggle", e => {
@@ -300,7 +318,7 @@ function renderRunning() {
     live.map(g => {
       const how = { host: "hosted", join: g.picked ? "picked" : "joined", match: "matchmaking" }[g.kind];
       const active = !["over", "left", "failed"].includes(g.phase);
-      return `<tr><td>${esc(g.joinCode || g.id)} <span class="why">${how}</span></td><td>${esc(mapName(g.mapKey))}${g.empires ? ` · ${g.empires}` : ""}${g.ranked ? " 🔥" : ""}</td>
+      return `<tr><td>${esc(g.joinCode || g.id)} <span class="why">${how}</span></td><td>${esc(mapName(g.mapKey))}${g.empires ? ` · ${g.empires}` : ""}${g.ranked ? " 🔥" : ""}${modeLine(g)}</td>
         <td>${esc(g.players.join(", "))}</td>
         <td><span class="ph ${esc(g.phase)}">${esc(g.phase)}</span> ${g.myTurn ? '<span class="turn">its turn</span>' : ""}<div class="why">${esc(g.note)}</div></td>
         <td class="r">${g.round ?? ""}</td>
@@ -308,7 +326,7 @@ function renderRunning() {
     }).join("") : `<tr><td class="empty">No live games.</td></tr>`;
   const mine = S.rundenspiele;
   $("mine").innerHTML = mine.length ? `<tr><th>Rundenspiel</th><th>Map</th><th>Players</th><th>Status</th><th class="r">Round</th><th></th></tr>` +
-    mine.map(g => `<tr><td>${esc(g.joinCode)} <span class="why">${g.isHost ? "hosted" : "joined"}</span></td><td>${esc(mapName(g.mapKey))}${g.empires ? ` · ${g.empires}` : ""}${g.ranked ? " 🔥" : ""}</td>
+    mine.map(g => `<tr><td>${esc(g.joinCode)} <span class="why">${g.isHost ? "hosted" : "joined"}</span></td><td>${esc(mapName(g.mapKey))}${g.empires ? ` · ${g.empires}` : ""}${g.ranked ? " 🔥" : ""}${modeLine(g)}</td>
       <td>${esc(g.players.join(", "))}</td>
       <td><span class="ph ${esc(g.status)}">${esc(g.status)}</span> ${g.yourTurn ? '<span class="turn">its turn</span>' : `<span class="why">${esc(g.waitingFor || "")}</span>`}</td>
       <td class="r">${g.round || ""}</td>
@@ -324,7 +342,7 @@ function renderList() {
   const head = `<tr><th>Code</th><th>Host</th><th>Map</th><th class="r">${tab === "lobbies" ? "Seats" : "Empires"}</th><th>Bots</th><th></th></tr>`;
   $("list").innerHTML = head + rows.map(g => {
     const seats = tab === "lobbies" ? `${g.players}/${g.seats}` : `${g.empires ?? "?"} (${g.free} free)`;
-    return `<tr><td>${esc(g.joinCode)}</td><td>${esc(g.host || "–")}</td><td>${esc(mapName(g.mapKey))}</td><td class="r">${esc(seats)}</td>
+    return `<tr><td>${esc(g.joinCode)}</td><td>${esc(g.host || "–")}</td><td>${esc(mapName(g.mapKey))}${modeLine(g)}</td><td class="r">${esc(seats)}</td>
       <td>${g.playerBots ? "allowed" : '<span class="why">off</span>'}</td>
       <td class="r">${g.hard ? "" : `<button class="small primary" data-join="${kind}" data-id="${esc(g.id)}">Join</button>`}
         <div class="why ${g.hard ? "hard" : ""}">${esc(g.why || "")}</div></td></tr>`;
@@ -358,7 +376,7 @@ document.addEventListener("click", async e => {
       const live = t.dataset.add === "live";
       cfg.host.setups.push({ id: Math.random().toString(16).slice(2, 8), kind: t.dataset.add, count: 1, mapKey: HOST_MAPS[t.dataset.add][0],
                              playerCount: 2, kiCount: 0, difficulty: "schwer", turnTime: 180, randomCivs: false, civMode: "random",
-                             isPublic: true, playerBotLimit: null, ranked: false, _open: true });
+                             isPublic: true, playerBotLimit: null, ranked: false, wonders: false, events: "off", _open: true });
       changed(true);
     } else if (t.dataset.del !== undefined) {
       cfg.host.setups.splice(+t.dataset.del, 1); changed(true);

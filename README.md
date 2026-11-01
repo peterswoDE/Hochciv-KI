@@ -154,15 +154,16 @@ change is saved at once (`runs/online-settings.json`). The switches work togethe
 
 | Setting | What the bot does |
 |---|---|
-| Join games | Joins public lobbies (live games: on/off and how many at once) and open Rundenspiele (on/off, how many at once) that match the join filters: maps, empires min–max, KI seats, ranked/unranked, live only with a turn timer, games hosted by other bots |
-| Host games | A list of setups: live lobby or Rundenspiel, map, empires, KI seats and level, turn timer, nations, other player-bots, public, ranked (🔥: MMR counts, KI on Schwer); each setup is kept open or running × times. A live lobby starts when it is full, or after X minutes with at least Y players; free seats become KI |
+| Join games | Joins public lobbies (live games: on/off and how many at once) and open Rundenspiele (on/off, how many at once) that match the join filters: maps (Marathon also covers custom maps with the marathon rules), empires min–max (up to 8), wonders, event modes (none / easy / hard), KI seats, ranked/unranked, live only with a turn timer, games hosted by other bots |
+| Host games | A list of setups: live lobby or Rundenspiel, map (also Marathon, 4 empires), empires (up to 8 on the tile map), KI seats and level, wonders, events (off / easy / hard), turn timer, nations, other player-bots, public, ranked (🔥: MMR counts, KI on Schwer); each setup is kept open or running × times. A live lobby starts when it is full, or after X minutes with at least Y players; free seats become KI |
 | Matchmaking | Ranked queue (bot accounts only; it only meets players who opted in to bots), one game at a time |
 | Chat greeting | Sent on entering a live lobby |
 
 The game list's *Join* works for every game the bot can play, whatever the join filters say;
 the reasons a game doesn't match are shown next to it (red ones block joining: full, no
-player-bots, events, wonders, marathon, more than 4 empires, an older engine). The bot always
-plays every game it is in. The public lobby list shows only the map and the human seats: the
+player-bots, an older engine). The bot plays every mode – wonders, events, the marathon (it
+drafts its two abilities like the JS KI) – with up to 8 empires, and always plays every game it
+is in. The public lobby list shows only the map and the human seats: the
 other filters are checked right after joining, and the bot leaves a lobby that doesn't match.
 The panel listens on 127.0.0.1 only and every API call needs the token in the page.
 

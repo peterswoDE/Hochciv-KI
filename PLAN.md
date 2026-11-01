@@ -151,4 +151,4 @@ win share significantly above 1/n (95 % CI above 0.25 in 4p), aiming at 10 % abo
 
 | # | Status |
 |---|---|
-| M8 | Layout v2 and the bridge modes done; v1 widened to `checkpoints/v1w.pt` (baseline in README). PPO `--mix v2` running in `checkpoints/ppo2` (log `ppo2.log`). Online client still refuses events/wonders/marathon/>4 empires: enable once the v2 model passes the suite (marathon needs the online draft) |
+| M8 | Layout v2 and the bridge modes done; v1 widened to `checkpoints/v1w.pt` (baseline in README). PPO `--mix v2` running in `checkpoints/ppo2` (log `ppo2.log`). Online client and panel play every mode: join filters for wonders, event modes, marathon and up to 8 empires, host setups with wonders/events/marathon, the marathon draft in live games and Rundenspiele (JS KI pick). Tested on staging: live marathon game (4 empires, 2 KI, wonders, hard events) and a marathon Rundenspiel (wonders, easy events) to the end. Reconnects open a fresh socket (socket.io's own reconnect lost the bot login) – tested with a forced drop |

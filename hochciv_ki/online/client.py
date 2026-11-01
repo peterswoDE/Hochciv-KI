@@ -24,8 +24,9 @@ together:
   * match – ranked matchmaking (bot accounts only: humans opt in to play bots), one game at
             a time, back in the queue after every game
   * games picked in the panel's game list are joined whatever the filters say
-The bot always plays every game it is in. It never plays events, wonders, marathon, more
-than 4 empires, or Rundenspiele of an older engine (config_ok).
+The bot always plays every game it is in: every mode (wonders, events, marathon with its
+ability draft) with up to 8 empires; the join filters choose which of them it joins on its own.
+It never plays Rundenspiele of an older engine.
 
 Every move is computed by the local bridge worker on the server's state: the candidate the
 agent picks is recorded as engine calls and sent as `action { type, params }`. Each live game
@@ -55,30 +56,33 @@ from ..eval import agent_factory
 log = logging.getLogger("hochciv-ki")
 
 GREETING = "Hallo! Ich bin HochCiv-KI, ein neuronales Netz (Bot). Viel Spaß!"
-MAX_PLAYERS = 4
+MAX_PLAYERS = 8
 # map keys of live lobbies and Rundenspiele -> the map groups in the settings
 MAP_GROUPS = {"0": "original", "1": "original", "original": "original", "gross": "gross",
-              "random": "tiles", "plaettchen": "tiles", "eigene": "custom"}
-HOST_MAPS = {"live": ("random", "0", "gross"), "async": ("plaettchen", "0", "gross")}
+              "random": "tiles", "plaettchen": "tiles", "eigene": "custom", "marathon": "marathon"}
+HOST_MAPS = {"live": ("random", "0", "gross", "marathon"), "async": ("plaettchen", "0", "gross", "marathon")}
+EVENT_MODES = ("off", "easy", "hard")
 TURN_TIMES = (0, 60, 120, 180, 300, 600)
 KI_LEVELS = ("leicht", "mittel", "schwer")
 MAX_SETUPS = 12
 
 SETUP = {"kind": "live", "count": 1, "mapKey": "random", "playerCount": 2, "kiCount": 0, "difficulty": "schwer",
          "turnTime": 180, "randomCivs": False, "civMode": "random", "isPublic": True, "playerBotLimit": None,
-         "ranked": False}
+         "ranked": False, "wonders": False, "events": "off"}
 DEFAULTS = {
     "version": 2,
     "join": {
         "on": False,
         "live": True, "max_live": 1,         # live games joined at once
         "async": True, "max_async": 5,       # Rundenspiele joined at once
-        "maps": ["tiles", "original", "gross", "custom"],
+        "maps": ["tiles", "original", "gross", "custom", "marathon"],
         "min_empires": 2, "max_empires": MAX_PLAYERS,
         "ki": True,                          # games with KI seats
         "ranked": "any",                     # any | ranked | unranked
         "timer": False,                      # live: only lobbies with a turn timer
         "bot_hosts": True,                   # games hosted by other bots
+        "wonders": True,                     # games with wonders
+        "events": list(EVENT_MODES),         # event modes joined: off, easy, hard
     },
     "host": {
         "on": False,
@@ -106,16 +110,31 @@ def fingerprint(state) -> int:
     return hash(json.dumps(state, sort_keys=True))
 
 
-def config_ok(cfg: dict, n_players=None, max_empires=MAX_PLAYERS) -> str | None:
-    """Why a game configuration is outside what the AI plays (None = fine)."""
-    if cfg.get("events"):
-        return "events"
+def is_marathon(cfg: dict) -> bool:
+    return bool(cfg.get("marathon") or cfg.get("mapKey") == "marathon" or (cfg.get("customMap") or {}).get("marathon"))
+
+
+def event_mode(cfg: dict) -> str:
+    return (cfg.get("eventMode") or "hard") if cfg.get("events") else "off"
+
+
+def mode_label(cfg: dict) -> str:
+    """Short text of the game options for the panel."""
+    bits = []
+    if is_marathon(cfg) and cfg.get("mapKey") != "marathon":
+        bits.append("marathon rules")
     if cfg.get("wonders"):
-        return "wonders"
-    if cfg.get("marathon") or cfg.get("mapKey") == "marathon":
-        return "marathon"
-    if (cfg.get("customMap") or {}).get("marathon"):
-        return "marathon map"
+        bits.append("wonders")
+    if event_mode(cfg) != "off":
+        bits.append("events " + event_mode(cfg))
+    return ", ".join(bits)
+
+
+def config_ok(cfg: dict, n_players=None, max_empires=MAX_PLAYERS) -> str | None:
+    """Why a game configuration is outside what the AI plays (None = fine). Since v2 it plays
+    every mode (wonders, events, marathon) with up to 8 empires."""
+    if str(cfg.get("mapKey")) not in MAP_GROUPS and cfg.get("mapKey") is not None:
+        return f"map {cfg.get('mapKey')}"
     n = n_players or cfg.get("playerCount") or cfg.get("humanCount")
     if n and n > max_empires:
         return f"{n} empires"
@@ -127,6 +146,12 @@ def join_filter(j: dict, cfg: dict, empires=None, ki=None, host_is_bot=False, li
     joining on its own: a game picked in the panel just has to be playable (config_ok)."""
     if MAP_GROUPS.get(str(cfg.get("mapKey"))) not in j["maps"]:
         return f"map {cfg.get('mapKey')}"
+    if is_marathon(cfg) and "marathon" not in j["maps"]:
+        return "marathon rules"
+    if cfg.get("wonders") and not j["wonders"]:
+        return "wonders"
+    if event_mode(cfg) not in j["events"]:
+        return "no events" if event_mode(cfg) == "off" else f"events {event_mode(cfg)}"
     n = empires or cfg.get("playerCount")
     if n and not j["min_empires"] <= n <= j["max_empires"]:
         return f"{n} empires"
@@ -150,8 +175,23 @@ def _num(v, lo, hi, default):
         return default
 
 
+def host_empires(map_key):
+    """Empires a hosted game may have on this map (as mapLimits in the engine)."""
+    if map_key == "marathon":
+        return 4, 4
+    if map_key in ("0", "gross"):
+        return 2, 4
+    return 2, MAX_PLAYERS
+
+
+def host_options(setup: dict) -> dict:
+    """The game options of a host setup in the server's config fields."""
+    ev = setup.get("events", "off")
+    return {"wonders": bool(setup.get("wonders")), "events": ev != "off", "eventMode": ev if ev != "off" else "hard"}
+
+
 def clean_setup(raw: dict, old: dict | None = None) -> dict:
-    s = dict(old or SETUP)
+    s = dict(SETUP, **(old or {}))
     s["id"] = str(raw.get("id") or s.get("id") or secrets.token_hex(3))[:12]
     if raw.get("kind") in HOST_MAPS:
         s["kind"] = raw["kind"]
@@ -160,8 +200,14 @@ def clean_setup(raw: dict, old: dict | None = None) -> dict:
     if s["mapKey"] not in HOST_MAPS[s["kind"]]:
         s["mapKey"] = HOST_MAPS[s["kind"]][0]
     s["count"] = _num(raw.get("count", s["count"]), 0, 30 if s["kind"] == "async" else 8, s["count"])
-    s["playerCount"] = _num(raw.get("playerCount", s["playerCount"]), 2, MAX_PLAYERS, s["playerCount"])
+    lo, hi = host_empires(s["mapKey"])
+    s["playerCount"] = _num(raw.get("playerCount", s["playerCount"]), lo, hi, s["playerCount"])
+    s["playerCount"] = max(lo, min(hi, s["playerCount"]))
     s["kiCount"] = min(_num(raw.get("kiCount", s["kiCount"]), 0, MAX_PLAYERS, 0), s["playerCount"] - 2)  # two humans
+    if "wonders" in raw:
+        s["wonders"] = bool(raw["wonders"])
+    if raw.get("events") in EVENT_MODES:
+        s["events"] = raw["events"]
     if raw.get("difficulty") in KI_LEVELS:
         s["difficulty"] = raw["difficulty"]
     if _num(raw.get("turnTime"), 0, 600, -1) in TURN_TIMES:
@@ -182,12 +228,21 @@ def clean_setup(raw: dict, old: dict | None = None) -> dict:
 def clean_settings(raw: dict, old: dict | None = None) -> dict:
     """Merge `raw` over `old` (or the defaults) and keep every value in range. `raw` may be
     partial; a given `host.setups` replaces the whole list."""
-    s = json.loads(json.dumps(old if old and old.get("version") == DEFAULTS["version"] else DEFAULTS))
+    s = json.loads(json.dumps(DEFAULTS))
+    if old and old.get("version") == DEFAULTS["version"]:
+        # settings saved before a key existed keep the key's default
+        old = json.loads(json.dumps(old))
+        s["join"].update(old.get("join") or {})
+        s["host"].update(old.get("host") or {})
+        s["host"]["setups"] = [clean_setup({}, x) for x in s["host"]["setups"]]
+        s.update({k: v for k, v in old.items() if k not in ("join", "host")})
     raw = raw or {}
     j, rj = s["join"], raw.get("join") or {}
-    for k in ("on", "live", "async", "ki", "timer", "bot_hosts"):
+    for k in ("on", "live", "async", "ki", "timer", "bot_hosts", "wonders"):
         if k in rj:
             j[k] = bool(rj[k])
+    if isinstance(rj.get("events"), list):
+        j["events"] = [m for m in EVENT_MODES if m in rj["events"]]
     j["max_live"] = _num(rj.get("max_live", j["max_live"]), 0, 8, j["max_live"])
     j["max_async"] = _num(rj.get("max_async", j["max_async"]), 0, 30, j["max_async"])
     j["min_empires"] = _num(rj.get("min_empires", j["min_empires"]), 2, MAX_PLAYERS, j["min_empires"])
@@ -215,7 +270,9 @@ def setup_key(cfg: dict):
     """What tells hosted Rundenspiele of one setup apart from those of another."""
     n = cfg.get("playerCount")
     humans = cfg.get("humanCount") if cfg.get("humanCount") is not None else n - (cfg.get("kiCount") or 0)
-    return str(cfg.get("mapKey")), n, humans, bool(cfg.get("ranked"))
+    # a setup stores events as "off" / "easy" / "hard", the server's config as events + eventMode
+    ev = cfg.get("events") if isinstance(cfg.get("events"), str) else event_mode(cfg)
+    return str(cfg.get("mapKey")), n, humans, bool(cfg.get("ranked")), bool(cfg.get("wonders")), ev
 
 
 class Tagged(logging.LoggerAdapter):
@@ -249,6 +306,19 @@ class Brain:
         with self.lock:
             r = self.bridge.call("place", plan=plan, seatIdx=seat_idx, players=players, setup=setup, seed=seed)
         return r["o"], r["cell"]
+
+    def draft_pick(self, draft, slot, name=None):
+        """Marathon draft {V, D}: the ability to pick when the empire in lobby seat `slot` (or
+        the one human empire called `name`) is the one to pick, else None. D.order indexes
+        V.players (turn order)."""
+        V, D = draft["V"], draft["D"]
+        named = [i for i, p in enumerate(V["players"]) if name and p.get("name") == name and p.get("kind") == "human"]
+        vi = named[0] if len(named) == 1 else \
+            next((i for i, p in enumerate(V["players"]) if p.get("slot") == slot), None)
+        if vi is None or D["at"] >= len(D["order"]) or D["order"][D["at"]] != vi:
+            return None
+        with self.lock:
+            return self.bridge.call("draftPick", V=V, D=D, pi=vi)["id"]
 
     def roll_setup(self, players, seed, cfg):
         with self.lock:
@@ -317,7 +387,7 @@ class Account:
 class Conn:
     """One socket.io connection with an ordered event queue, handled in its own thread."""
 
-    EVENTS = ("game:start", "state:update", "placement:start", "game:over", "session:kicked",
+    EVENTS = ("game:start", "state:update", "placement:start", "draft:update", "game:over", "session:kicked",
               "async:update", "match:found", "match:ready", "match:cancelled", "turn:timeout",
               "lobby:player:updated", "lobby:config:update", "session:rematch", "player:joined", "player:left")
 
@@ -327,6 +397,7 @@ class Conn:
         self.events: queue.Queue = queue.Queue()
         self.stash = []              # events put aside while waiting for an update
         self.sio = None
+        self.closing = False         # closed on purpose: a disconnect is no reason to reconnect
 
     def connect(self, tries=4):
         """Open the socket. The first request may take a while on a slow network (engine.io's
@@ -341,7 +412,10 @@ class Conn:
                 time.sleep(5 * attempt)
 
     def _connect(self):
-        self.sio = socketio.Client(reconnection=True, logger=False, engineio_logger=False, request_timeout=20)
+        # No socket.io reconnect: it comes back without the login (the server then refuses a
+        # bot's seat and its Rundenspiele). next_event reconnects with a fresh client instead.
+        self.sio = sio = socketio.Client(reconnection=False, logger=False, engineio_logger=False, request_timeout=20)
+        self.closing = False
         # engine.io handles every message in its own thread, so an ack could overtake the
         # broadcast of the previous action and the next decision would see a stale state.
         # Our handlers only queue events, so handling them in order in the read thread is safe.
@@ -354,12 +428,13 @@ class Conn:
         self.sio.eio._trigger_event = in_order
         for ev in self.EVENTS:
             self.sio.on(ev, (lambda e: lambda data=None: self.events.put((e, data)))(ev))
-        self.sio.on("disconnect", lambda *a: self.events.put(("disconnect", None)))
+        self.sio.on("disconnect", lambda *a: self.events.put(("disconnect", sio)))
         self.sio.on("connect", lambda: self.events.put(("connect", None)))
         self.sio.connect(self.acc.url, headers={"Cookie": self.acc.cookie(), "Origin": self.acc.url},
                          transports=["polling", "websocket"], wait_timeout=20)
 
     def close(self):
+        self.closing = True
         try:
             if self.sio:
                 self.sio.disconnect()
@@ -381,7 +456,19 @@ class Conn:
         self.events.put(("cmd:" + name, data))
 
     def next_event(self, timeout=2):
-        return self.stash.pop(0) if self.stash else self.events.get(timeout=timeout)
+        ev, data = self.stash.pop(0) if self.stash else self.events.get(timeout=timeout)
+        if ev == "disconnect" and data is self.sio and not self.closing:
+            # the connection dropped (e.g. the server was busy past the ping timeout): log in
+            # again if the session ended and open a fresh socket; its connect event follows
+            self.log.warning("connection lost, reconnecting")
+            try:
+                self.acc.check_login()
+                self.reconnect()
+            except Exception as e:  # noqa: BLE001 - try again later
+                self.log.warning("reconnect failed (%s), next try in 30 s", e)
+                time.sleep(30)
+                self.events.put((ev, data))
+        return ev, data
 
     def guarded(self, fn, *args):
         try:
@@ -466,6 +553,7 @@ class LiveGame(Conn):
         self.since = time.time()
         self.last_start_try = self.last_ping = 0.0
         self.connected = False       # the first connect event is the initial connection
+        self.rebinds = 0             # failed seat bindings after reconnects in a row
         self.done = threading.Event()
         self.thread = threading.Thread(target=self.run, daemon=True, name=f"live-{self.id}")
 
@@ -480,7 +568,7 @@ class LiveGame(Conn):
                 "phase": self.phase, "note": self.note,
                 "joinCode": self.join_code, "sessionId": g.get("sessionId"), "password": g.get("password"),
                 "mapKey": cfg.get("mapKey"), "empires": cfg.get("playerCount"), "kiCount": cfg.get("kiCount"),
-                "ranked": bool(cfg.get("ranked")),
+                "ranked": bool(cfg.get("ranked")), "mode": mode_label(cfg),
                 "players": [p.get("name") for p in (g.get("players") or [])], "round": S.get("round"),
                 "myTurn": bool(S) and not S.get("over") and S.get("cur") == g.get("yourIndex"),
                 "since": self.since}
@@ -527,8 +615,8 @@ class LiveGame(Conn):
     def open_lobby(self):
         client_id = secrets.token_hex(16)
         keys = ("mapKey", "playerCount", "kiCount", "difficulty", "turnTime", "randomCivs", "isPublic", "playerBotLimit", "ranked")
-        cfg = dict({k: self.host_cfg[k] for k in keys if k in self.host_cfg}, events=False, eventMode="hard",
-                   wonders=False, noKi=False, playerBots=True, seed=secrets.randbelow(2 ** 31))
+        cfg = dict({k: self.host_cfg[k] for k in keys if k in self.host_cfg}, **host_options(self.host_cfg),
+                   noKi=False, playerBots=True, seed=secrets.randbelow(2 ** 31))
         cfg["ranked"] = bool(cfg.get("ranked"))
         r = self.acc.post("/api/sessions", json={
             "config": cfg, "host": {"name": self.acc.name, "clientId": client_id, "civ": "random", "ability": "random"}})
@@ -605,6 +693,9 @@ class LiveGame(Conn):
         elif ev == "placement:start" and self.g:
             self.phase = "placement"
             self.guarded(self.live_place, data)
+        elif ev == "draft:update" and self.g and data:
+            self.phase = "draft"
+            self.guarded(self.live_draft, data)
         elif ev in ("player:joined", "player:left") and self.g and data:
             self.g["players"] = data.get("players", self.g.get("players"))
         elif ev == "lobby:player:updated" and self.g:
@@ -622,9 +713,20 @@ class LiveGame(Conn):
         elif ev == "connect" and not self.connected:
             self.connected = True
         elif ev == "connect" and self.g:
-            # reconnect: bind the seat again
-            self.call("session:connect", {"sessionId": self.g["sessionId"], "password": self.g["password"],
-                                          "clientId": self.g["clientId"]})
+            # reconnect: bind the seat again. socket.io's own reconnect can come back without
+            # the login (the server then refuses a bot seat): check the login and open a fresh
+            # socket with the current cookie; its connect event binds the seat again.
+            try:
+                self.call("session:connect", {"sessionId": self.g["sessionId"], "password": self.g["password"],
+                                              "clientId": self.g["clientId"]})
+                self.rebinds = 0
+            except RuntimeError as e:
+                self.rebinds += 1
+                if self.rebinds > 3:
+                    raise
+                self.log.warning("seat not bound again (%s): fresh connection", e)
+                self.acc.check_login()
+                self.reconnect()
         elif ev == "turn:timeout":
             self.log.warning("turn timed out")
 
@@ -640,6 +742,12 @@ class LiveGame(Conn):
         o, cell = self.brain.place(data["plan"], me, players, setup, data["seed"])
         self.call("placement:action", {"o": o, "cell": cell})
         self.log.info("placed start tile o=%s cell=%s", o, cell)
+
+    def live_draft(self, draft):
+        pick = self.brain.draft_pick(draft, self.g["lobbyIndex"], self.acc.name)
+        if pick:
+            self.call("draft:pick", {"id": pick})
+            self.log.info("drafted %s", pick)
 
     def live_turn(self):
         g = self.g
@@ -716,6 +824,10 @@ class Rundenspiele(Conn):
             self.guarded(self.poll)
         elif ev == "cmd:reconnect":
             self.guarded(self.reconnect)
+        elif ev == "connect":
+            # a new socket has no game opened: the poll opens the due ones again
+            self.async_open = None
+            self.guarded(self.poll)
         elif ev == "async:update" and data:
             self.accept(data)
             self.drain()
@@ -795,7 +907,7 @@ class Rundenspiele(Conn):
 
     def host(self, setup):
         keys = ("mapKey", "playerCount", "kiCount", "difficulty", "civMode", "isPublic", "playerBotLimit", "ranked")
-        cfg = dict({k: setup.get(k) for k in keys}, events=False, eventMode="hard", wonders=False, playerBots=True)
+        cfg = dict({k: setup.get(k) for k in keys}, **host_options(setup), playerBots=True)
         cfg["ranked"] = bool(cfg["ranked"])
         r = self.acc.post("/api/async", json={"config": cfg, "civ": "random", "ability": "random"})
         body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
@@ -835,6 +947,12 @@ class Rundenspiele(Conn):
             o, cell = self.brain.place(pl["plan"], view["mySlot"], pl["players"], pl.get("setup"), 1)
             self.call("async:place", {"id": gid, "o": o, "cell": cell})
             self.log.info("%s: placed start tile", gid)
+            return
+        if view.get("status") == "draft" and view.get("draft"):
+            pick = self.brain.draft_pick(view["draft"], view["mySlot"])
+            if pick:
+                self.call("async:draft", {"id": gid, "abilityId": pick})
+                self.log.info("%s: drafted %s", gid, pick)
             return
         S, me = view.get("state"), view.get("myIndex", -1)
         if view.get("status") != "playing" or not S or S.get("over") or me < 0 or S["cur"] != me or view.get("hold"):
@@ -1046,6 +1164,7 @@ class Manager:
             "rundenspiele": [{"id": s.get("id"), "joinCode": s.get("joinCode"), "status": s.get("status"),
                               "empires": (s.get("config") or {}).get("playerCount"),
                               "ranked": bool((s.get("config") or {}).get("ranked")),
+                              "mode": mode_label(s.get("config") or {}),
                               "isHost": s.get("isHost"), "round": s.get("round"), "yourTurn": s.get("yourTurn"),
                               "waitingFor": s.get("waitingFor"), "mapKey": (s.get("config") or {}).get("mapKey"),
                               "players": [x.get("name") or ("KI" if x.get("kind") == "ki" else "–") for x in s.get("seats") or []]}
@@ -1069,6 +1188,7 @@ class Manager:
                 cfg = s.get("config") or {}
                 why, hard = self.rs.fit(s)
                 games.append({"id": s.get("id"), "joinCode": s.get("joinCode"), "mapKey": cfg.get("mapKey"),
+                              "mode": mode_label(cfg),
                               "status": s.get("status"), "empires": cfg.get("playerCount"),
                               "free": len(s.get("freeSeats") or []), "round": s.get("round"),
                               "host": next((x.get("name") for x in s.get("seats") or [] if x.get("userId")), None),

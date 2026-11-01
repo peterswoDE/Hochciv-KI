@@ -439,6 +439,8 @@ const handlers = {
     return recording(g, () => step(g, a.i));
   },
   rollSetup: a => ({ setup: E.rollSetup(a.cfg) }),
+  // online marathon draft: the JS KI's pick for V index `pi` on the server's { V, D }
+  draftPick: a => ({ id: E.kiDraftPick(a.V, a.D, a.pi) }),
   info: () => ({ version: VERSION, engineDir: ENGINE_DIR, civs: CIVS.map(c => c.k), dims: FEAT.dims }),
   observe: a => observe(game(a), a.grid !== false),
   reset: a => reset(a),
