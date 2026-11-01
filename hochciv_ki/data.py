@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 
 from .env import Agent, play_game
-from .model import grid_to_u8
+from .model import grid_scale, grid_to_u8
 from .pool import BridgePool
 
 SEAT_MIX = [   # (weight, players, map choices)
@@ -71,7 +71,7 @@ def gen_game(bridge, dims, job, make_actor):
     for pi, traj in r.trajectories.items():
         z = r.score(pi) if r.over else 1.0 / len(players)
         for obs, _a, _extra in traj:
-            rows.append((grid_to_u8(obs.grid), obs.glob.copy(), obs.cand.copy(), obs.pos.copy(), obs.teacher, z, len(players)))
+            rows.append((grid_to_u8(obs.grid, grid_scale(dims)), obs.glob.copy(), obs.cand.copy(), obs.pos.copy(), obs.teacher, z, len(players)))
     return rows, r
 
 

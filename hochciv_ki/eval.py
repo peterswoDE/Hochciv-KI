@@ -28,6 +28,16 @@ def opp_seat(spec: str):
     raise ValueError(spec)
 
 
+def mode_name(n_players, map_key, opts):
+    o = opts or {}
+    tags = [f"{n_players}p", map_key]
+    if o.get("wonders"):
+        tags.append("wonders")
+    if o.get("events"):
+        tags.append("events " + o.get("eventMode", "hard"))
+    return ", ".join(tags)
+
+
 def jobs_for(n_players, seeds, base_seed, map_key):
     for s in range(seeds):
         for seat in range(n_players):
@@ -35,14 +45,16 @@ def jobs_for(n_players, seeds, base_seed, map_key):
 
 
 def run_eval(pool: BridgePool, make_agent, opp: str, n_players=2, seeds=50, base_seed=10_000,
-             map_key="plaettchen", progress=True):
+             map_key="plaettchen", progress=True, opts=None):
+    """opts: game options for the bridge (events, eventMode, wonders)."""
     agent = make_agent()
     jobs = list(jobs_for(n_players, seeds, base_seed, map_key))
 
     def one(bridge, job):
         players = [opp_seat(opp) for _ in range(job["n"])]
         players[job["seat"]] = {"kind": "agent"}
-        r = play_game(bridge, pool.dims, players, {job["seat"]: agent}, seed=job["seed"], map_key=job["map"])
+        r = play_game(bridge, pool.dims, players, {job["seat"]: agent}, seed=job["seed"], map_key=job["map"],
+                      **(opts or {}))
         return job, r
 
     t0 = time.perf_counter()
@@ -67,7 +79,7 @@ def run_eval(pool: BridgePool, make_agent, opp: str, n_players=2, seeds=50, base
         "median_round": rounds[n // 2], "how": dict(hows), "seconds": dt,
     }
     if progress:
-        print(f"{n} games ({n_players}p, {map_key}) vs {opp}: score {mean:.3f} ± {ci:.3f} "
+        print(f"{n} games ({mode_name(n_players, map_key, opts)}) vs {opp}: score {mean:.3f} ± {ci:.3f} "
               f"(fair share {fair:.3f}), median end round {out['median_round']}, {dt:.0f}s")
         for k, v in hows.most_common():
             print(f"    {v:4d}  {k}")
@@ -96,11 +108,17 @@ def main():
     ap.add_argument("--map", default="plaettchen")
     ap.add_argument("--workers", type=int, default=None)
     ap.add_argument("--base-seed", type=int, default=10_000)
+    ap.add_argument("--wonders", action="store_true")
+    ap.add_argument("--events", choices=["hard", "easy"], default=None)
     args = ap.parse_args()
+    opts = {"wonders": args.wonders}
+    if args.events:
+        opts.update(events=True, eventMode=args.events)
     kw = {"workers": args.workers} if args.workers else {}
     with BridgePool(**kw) as pool:
         print(f"engine {pool.version}, {pool.workers} workers")
-        run_eval(pool, agent_factory(args.agent), args.opp, args.players, args.seeds, args.base_seed, args.map)
+        run_eval(pool, agent_factory(args.agent), args.opp, args.players, args.seeds, args.base_seed, args.map,
+                 opts=opts)
 
 
 if __name__ == "__main__":

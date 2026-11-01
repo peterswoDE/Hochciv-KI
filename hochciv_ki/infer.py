@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 from .env import Agent, Obs
-from .model import Net, collate, grid_to_u8
+from .model import Net, collate, grid_scale, grid_to_u8
 
 
 class InferenceServer:
@@ -76,10 +76,11 @@ class ServerAgent(Agent):
 
     def __init__(self, server: InferenceServer, greedy=False, seed=None):
         self.server, self.greedy = server, greedy
+        self.scale = grid_scale(server.net.dims)
         self.rng = np.random.default_rng(seed)
 
     def act(self, obs: Obs):
-        sample = (grid_to_u8(obs.grid), obs.glob, obs.cand, obs.pos)
+        sample = (grid_to_u8(obs.grid, self.scale), obs.glob, obs.cand, obs.pos)
         logits, v = self.server.request(sample).result()
         p = softmax(logits)
         a = int(p.argmax()) if self.greedy else int(self.rng.choice(len(p), p=p))

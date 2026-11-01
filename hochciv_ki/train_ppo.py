@@ -32,6 +32,11 @@ from .pool import BridgePool
 MAPS = {"2": ["plaettchen", "plaettchen", "plaettchen", "original", "gross", "customgen"],
         "3": ["plaettchen", "plaettchen", "gross", "customgen"],
         "4": ["plaettchen", "plaettchen", "original", "gross", "customgen"]}
+# v2: also marathon maps, and 5–8 empires (tile and custom maps allow up to 8)
+MAPS_V2 = {"2": MAPS["2"] + ["customgen-marathon"],
+           "3": MAPS["3"] + ["customgen-marathon"],
+           "4": MAPS["4"] + ["marathon", "marathon", "customgen-marathon"],
+           **{str(n): ["plaettchen", "plaettchen", "customgen", "customgen", "customgen-marathon"] for n in range(5, 9)}}
 
 # (weight, seats) – L: learner (records), S: snapshot, ki:*, bot:*
 MIXES = {
@@ -52,6 +57,26 @@ MIXES = {
         (1, ["L", "S", "ki:schwer", "bot:koenig"]),
     ],
 }
+KI = "ki:schwer"
+# v2: the v1 mix plus 5–8 empires; game options (wonders, events) are drawn per game
+MIXES["v2"] = MIXES["all"] + [
+    (1, ["L"] + [KI] * 4),
+    (1, ["L", "L"] + [KI] * 4),
+    (1, ["L"] + [KI] * 6),
+    (1, ["L", "S"] + [KI] * 6),
+    (1, ["L", "L", "S", KI, KI, "bot:koenig", KI]),
+]
+
+
+def game_options(rng, mix):
+    """v2: wonders in 40 % of the games, events in half of them (hard or easy)."""
+    if mix != "v2":
+        return {}
+    o = {"wonders": rng.random() < 0.4}
+    ev = rng.random()
+    if ev < 0.5:
+        o.update(events=True, eventMode="hard" if ev < 0.25 else "easy")
+    return o
 
 
 def seat(s):
@@ -194,8 +219,9 @@ def main():
             jobs = []
             for g in range(args.games):
                 seats = rng.choices([m[1] for m in mix], weights=[m[0] for m in mix])[0]
+                maps = (MAPS_V2 if args.mix == "v2" else MAPS)[str(len(seats))]
                 jobs.append({"seed": 50_000_000 + it * 1000 + g, "seats": seats,
-                             "map": rng.choice(MAPS[str(len(seats))])})
+                             "map": rng.choice(maps), "opts": game_options(rng, args.mix)})
             results = pool.map(lambda b, j: collect(b, pool.dims, j, learner_srv, snap_srv), jobs)
             batch, wins, games_vs_ki, steps = [], 0.0, 0, 0
             for recs, info in results:
@@ -223,10 +249,10 @@ def main():
                 st["league"] = (st["league"] + [str(p)])[-8:]
                 snap_srv.load_state(load_net(rng.choice(st["league"]), device)[0].state_dict())
             if it % args.eval_every == 0:
-                ev = evaluate(pool, net, device, args.eval_seeds)
+                ev = evaluate(pool, net, device, args.eval_seeds, args.mix)
                 rec["eval"] = ev
                 print(json.dumps({"iter": it, "eval": ev}), flush=True)
-                if st["best"] is None or ev["2p"]["score"] > st["best"]["2p"]["score"]:
+                if st["best"] is None or best_key(ev) > best_key(st["best"]):
                     st["best"] = dict(ev, iter=it)
                     save_net(net, out / "best.pt", iter=it, eval=ev)
             st["history"].append(rec)
@@ -249,7 +275,7 @@ def collect(bridge, dims, job, learner, snap):
         elif s == "S":
             agents[i] = ServerAgent(snap, seed=job["seed"] * 31 + i)
     r = play_game(bridge, dims, players, agents, seed=job["seed"], map_key=job["map"], record=True,
-                  startPlayer=rng.randrange(len(players)))
+                  startPlayer=rng.randrange(len(players)), **job.get("opts", {}))
     recs = []
     learner_pis = [pi for pi, traj in r.trajectories.items() if traj and traj[0][2] is not None
                    and r.slot_of.get(pi) in learner_slots]
@@ -261,9 +287,20 @@ def collect(bridge, dims, job, learner, snap):
     return recs, {"vs_ki": vs_ki, "score": score, "steps": r.steps}
 
 
-def evaluate(pool, net, device, seeds):
+def best_key(ev):
+    """v1 runs: the 1v1 score. v2 runs: the mean score relative to the fair share over the suite."""
+    if "suite" in ev:
+        return sum(r["rel"] for r in ev["suite"]) / len(ev["suite"])
+    return ev["2p"]["score"]
+
+
+def evaluate(pool, net, device, seeds, mix="all"):
     from .model import NetAgent
     agent = NetAgent(copy.deepcopy(net).eval(), device, greedy=True)
+    if mix == "v2":
+        from .eval_modes import run_suite
+        # a quarter of the full suite, on its own seeds (the full suite is for final numbers)
+        return {"suite": run_suite(pool, lambda: agent, "v2", scale=seeds / 240, base_seed=30_000, progress=False)}
     res = {}
     res["2p"] = run_eval(pool, lambda: agent, "ki:schwer", 2, seeds, base_seed=10_000, progress=False)
     res["4p"] = run_eval(pool, lambda: agent, "ki:schwer", 4, max(5, seeds // 4), base_seed=20_000, progress=False)

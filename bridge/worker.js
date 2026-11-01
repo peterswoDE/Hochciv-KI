@@ -88,10 +88,12 @@ function makePlayers(seats, seed, distinct) {
 /* A random custom map (as the map editor would store one) for `n` empires: land masses from
    smoothed noise, the land types in about the shares of the tile maps, start points spread
    out. Training on these keeps the network from learning only the built-in maps. */
-function genCustomMap(seed, n) {
+function genCustomMap(seed, n, marathon = false) {
   const rnd = mulberry(seed ^ 0x2545F491);
   for (let attempt = 0; attempt < 20; attempt++) {
-    const H = 8 + Math.floor(rnd() * 13), W = 10 + Math.floor(rnd() * 21);
+    // marathon custom maps are larger (the standard marathon map is 24 × 36)
+    const H = marathon ? 16 + Math.floor(rnd() * 15) : 8 + Math.floor(rnd() * 13);
+    const W = marathon ? 22 + Math.floor(rnd() * 19) : 10 + Math.floor(rnd() * 21);
     let land = Array.from({ length: H }, () => Array.from({ length: W }, () => rnd() < 0.6));
     for (let it = 0; it < 3; it++) {
       land = land.map((row, r) => row.map((v, c) => {
@@ -117,26 +119,39 @@ function genCustomMap(seed, n) {
         if (spawns.length >= want) break;
         if (spawns.every(q => E.hexDistance(p[0], p[1], q[0], q[1]) >= minD)) spawns.push(p);
       }
-      if (spawns.length >= n) return { name: 'Zufallskarte ' + seed, rows, spawns };
+      if (spawns.length >= n) return { name: 'Zufallskarte ' + seed, rows, spawns, marathon };
     }
   }
   throw new Error('no custom map for ' + n + ' players');
 }
 
 /* map: 'plaettchen' (tile map with placement, also the lobby's "random"), 'original', 'gross',
-   'customgen' (a random custom map, genCustomMap),
-   or a custom map object as stored by the map editor ({ name, rows, spawns, ... }). Agent seats
-   place their start tile with the JS KI (kiPlaceSeat) in v1. */
+   'marathon' (the standard marathon map, 4 empires), 'customgen' / 'customgen-marathon' (a
+   random custom map, genCustomMap, the second one with the marathon rules), or a custom map
+   object as stored by the map editor ({ name, rows, spawns, marathon?, ... }). Agent seats
+   place their start tile (kiPlaceSeat) and draft their marathon abilities (kiDraftPick) with
+   the JS KI. Options: events, eventMode ('hard' | 'easy'), wonders. */
 function reset(a) {
   const seed = (a.seed ?? Math.floor(Math.random() * 2 ** 31)) | 0;
-  const map = a.map === 'customgen' ? genCustomMap(seed, a.players.length) : (a.map || 'plaettchen');
+  const map = a.map === 'customgen' || a.map === 'customgen-marathon'
+    ? genCustomMap(seed, a.players.length, a.map === 'customgen-marathon') : (a.map || 'plaettchen');
   const fixed = map === 'original' || map === 'gross';
   const players = makePlayers(a.players, seed, fixed);
   const cfg = {
-    seed, players, duel: players.length === 2, events: !!a.events, eventMode: 'hard',
-    wonders: !!a.wonders, startPlayer: a.startPlayer ?? 0,
+    seed, players, duel: players.length === 2, events: !!a.events,
+    eventMode: a.eventMode === 'easy' ? 'easy' : 'hard', wonders: !!a.wonders, startPlayer: a.startPlayer ?? 0,
   };
-  if (map === 'plaettchen') {
+  if (map === 'marathon' || (typeof map === 'object' && map.marathon)) {
+    if (map === 'marathon') cfg.map = E.marathonMap(seed);
+    else {
+      const r = E.checkCustomMap(map);
+      if (r.error) throw new Error('custom map: ' + r.error);
+      cfg.map = E.mapForPlayers(r.map, players.length, seed);
+      if (!cfg.map) throw new Error('custom map has too few start points');
+    }
+    cfg.marathon = true;
+    draftMarathon(cfg, seed);
+  } else if (map === 'plaettchen') {
     const plan = E.tilePlan(players.map(p => p.civ), seed);
     if (!plan) throw new Error('no tile map for ' + players.length + ' players');
     const setup = E.rollSetup(Object.assign({}, cfg));
@@ -165,6 +180,22 @@ function reset(a) {
   games.set(gid, g);
   runOthers(g);
   return Object.assign({ gid }, status(g));
+}
+
+/* Marathon setup like the server (engine-adapter.js startDraft/finishDraft): starting techs and
+   wonder pools rolled first, then every non-bot empire drafts two abilities in snake order on a
+   preview of the game. Agent seats draft like the JS KI (a learned draft comes later). */
+function draftMarathon(cfg, seed) {
+  const setup = E.rollSetup(Object.assign({}, cfg));
+  cfg.avail = setup.avail; cfg.wpool = setup.wpool;
+  const V = E.draftView(cfg);
+  const D = E.draftNew(V, seed + 1);
+  for (let guard = 0; D.at < D.order.length && guard < 64; guard++) {
+    const pi = D.order[D.at];
+    const err = E.draftPick(D, pi, E.kiDraftPick(V, D, pi));
+    if (err) throw new Error('draft: ' + err);
+  }
+  V.players.forEach((p, i) => { if (p.kind !== 'bot') cfg.players[p.slot].drafted = D.picks[i].slice(); });
 }
 
 function status(g) {

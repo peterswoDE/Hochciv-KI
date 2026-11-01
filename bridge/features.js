@@ -12,11 +12,13 @@
      glob   [GLOB_N]                  game and per-seat vectors
      cand   [n, CAND_F]               one row per candidate, the last row is "end"
      pos    [n, 2] int32              target cell of a candidate (r, c) or (-1, -1)
-   Seats: slot 0 is the observer, then the others in turn order; with more than NSEAT empires
-   the rest share the last slot.                                                            */
+   Seats: slot 0 is the observer, then the other empires in turn order (up to MAX_PLAYERS = 8).
+   The barbarians (events) are no seat: they have their own map planes.
+   Every input has a name (dims.names); hochciv_ki/widen.py carries trained weights over to a
+   new layout by these names, new inputs start at zero weight.                              */
 'use strict';
 
-const NSEAT = 4;
+const NSEAT = 8;
 const TERRAINS = ['G', 'W', 'B', 'F', 'M', 'I', 'V', 'X'];
 const CAND_TYPES = ['tech', 'free', 'back', 'pick', 'copyf', 'copyp', 'gfree', 'grow', 'found',
   'road1', 'road2', 'slave', 'col', 'wonder', 'power', 'strike', 'defend', 'flank', 'end'];
@@ -25,7 +27,9 @@ function makeFeatures(E, konst) {
   const fn = name => (typeof E[name] === 'function' ? E[name] : konst(name));
   const citiesOf = fn('citiesOf'), armiesOf = fn('armiesOf'), popOf = fn('popOf'),
     worldPop = fn('worldPop'), roadLevel = fn('roadLevel'),
-    capitalsTaken = fn('capitalsTaken');
+    capitalsTaken = fn('capitalsTaken'), abilitiesOf = fn('abilitiesOf'),
+    wonderCost = fn('wonderCost'), hasWonder = fn('hasWonder');
+  const empireCount = S => S.players.filter(p => p.kind !== 'barbar').length;   // barbarians come last
   const TECHS = konst('TECHS');
   const TECH_KEYS = Array.isArray(TECHS) ? TECHS.map(t => t.k) : Object.keys(TECHS);
   const TECH_IDX = Object.fromEntries(TECH_KEYS.map((k, i) => [k, i]));
@@ -34,25 +38,40 @@ function makeFeatures(E, konst) {
   for (const c of konst('CIVS')) for (const a of (c.abilities || [])) ABILS.push(c.k + ':' + a.k);
   const CIV_KEYS = konst('CIVS').map(c => c.k);
   const KI_W = konst('KI_W'), KI_RESEARCH_TAG = konst('KI_RESEARCH_TAG');
+  const WONDER_KEYS = konst('WONDERS').map(w => w.k);
+  const WONDER_IDX = Object.fromEntries(WONDER_KEYS.map((k, i) => [k, i]));
+  const NW = WONDER_KEYS.length;
+  const EVENT_KEYS = konst('EVENT_ROWS').flat().map(e => e.k);
+  const NE = EVENT_KEYS.length;
 
   // ---------------------------------------------------------------- grid
-  const CH = {
-    terrain: 0,                       // 8 one-hot
-    yield: 8,                         // 3: sci, food, coins for the observer
-    ctrl: 11,                         // NSEAT: controlled by seat
-    city: 15,                         // NSEAT: city pop / 5
-    cap: 19,                          // capital
-    army: 20,                         // NSEAT: armies on the cell
-    mp: 24,                           // observer's army: movement left / 4
-    road: 25,                         // road level / 2
-    bought: 26,                       // NSEAT: colony bought by seat
-    siege: 30,                        // siege counter on a city / 2
-    valid: 31,                        // inside the map
-  };
-  const GRID_C = 32;
+  // [name, planes, integer scale (a plane stores value / scale, the model keeps uint8)]
+  const GRID_LAYOUT = [
+    ['terrain', 8, 1],                // one-hot
+    ['yield', 3, 3],                  // sci, food, coins for the observer
+    ['ctrl', NSEAT, 1],               // controlled by seat
+    ['city', NSEAT, 5],               // city pop / 5
+    ['cap', 1, 1],                    // capital
+    ['army', NSEAT, 1],               // armies on the cell
+    ['mp', 1, 4],                     // observer's army: movement left / 4
+    ['road', 1, 2],                   // road level / 2
+    ['bought', NSEAT, 1],             // colony bought by seat
+    ['siege', 1, 2],                  // siege counter on a city / 2
+    ['barbCity', 1, 5],               // barbarian city pop / 5
+    ['barbArmy', 1, 1],               // barbarian armies
+    ['wonder', 1, 3],                 // wonders in the city / 3
+    ['valid', 1, 1],                  // inside the map – must stay the last plane
+  ];
+  const CH = {}, GRID_NAMES = [], GRID_SCALE = [];
+  for (const [k, n, sc] of GRID_LAYOUT) {
+    CH[k] = GRID_NAMES.length;
+    for (let j = 0; j < n; j++) { GRID_NAMES.push(n > 1 ? k + j : k); GRID_SCALE.push(sc); }
+  }
+  const GRID_C = GRID_NAMES.length;
 
+  // empires in turn order relative to the observer; the barbarians get -1
   const slotOf = (S, me) => {
-    const n = S.players.length, m = new Array(n);
+    const n = empireCount(S), m = new Array(S.players.length).fill(-1);
     for (let k = 0; k < n; k++) m[(me + k) % n] = Math.min(k, NSEAT - 1);
     return m;
   };
@@ -79,16 +98,20 @@ function makeFeatures(E, konst) {
     }
     const put = (ch, r, c, v) => { if (r >= 0 && r < GRID_H && c >= 0 && c < GRID_W) out[at(ch, r, c)] += v; };
     S.players.forEach((p, pi) => {
-      if (p.dead) return;
+      if (p.dead || slot[pi] < 0) return;
       for (const k of E.controlledTiles(S, pi)) { const [r, c] = k.split(',').map(Number); put(CH.ctrl + slot[pi], r, c, 1); }
       for (const k of (S.bought[pi] || [])) { const [r, c] = k.split(',').map(Number); put(CH.bought + slot[pi], r, c, 1); }
     });
     for (const ct of S.cities) {
-      put(CH.city + slot[ct.owner], ct.r, ct.c, ct.pop / 5);
+      put(slot[ct.owner] < 0 ? CH.barbCity : CH.city + slot[ct.owner], ct.r, ct.c, ct.pop / 5);
       if (ct.cap) put(CH.cap, ct.r, ct.c, 1);
     }
+    for (const w of (S.wonders || [])) {
+      const ct = S.cities.find(x => x.id === w.cityId);
+      if (ct) put(CH.wonder, ct.r, ct.c, 1 / 3);
+    }
     for (const a of S.armies) {
-      put(CH.army + slot[a.owner], a.r, a.c, 1);
+      put(slot[a.owner] < 0 ? CH.barbArmy : CH.army + slot[a.owner], a.r, a.c, 1);
       if (a.owner === me) put(CH.mp, a.r, a.c, (a.mp || 0) / 4);
     }
     for (const sk in S.sieges) {
@@ -100,13 +123,24 @@ function makeFeatures(E, konst) {
   }
 
   // ---------------------------------------------------------------- global
-  const SEAT_F = 22 + CIV_KEYS.length + ABILS.length + 2 * NT;
-  const GAME_F = 8;
+  const SEAT_NAMES = ['present', 'dead', 'cur', 'turnPos', 'resSci', 'resFood', 'resCoins', 'incSci',
+    'incFood', 'incCoins', 'power', 'pop', 'econProgress', 'cities', 'armies', 'techs', 'capitalsTaken',
+    'freeArmies', 'backPicks', 'wonders', 'powerOf', 'claim',
+    ...CIV_KEYS.map(k => 'civ:' + k), ...ABILS.map(k => 'abil:' + k),
+    ...TECH_KEYS.map(k => 'tech:' + k), ...TECH_KEYS.map(k => 'avail:' + k),
+    ...WONDER_KEYS.map(k => 'wonderOwn:' + k), 'wonderCost', 'cultureWin'];
+  const SEAT_F = SEAT_NAMES.length;
+  const GAME_NAMES = ['round', 'players', 'duel', 'marathon', 'wonders', 'events', 'claims', 'worldPop',
+    'evEasy', 'nukeBan', 'barbarians', ...EVENT_KEYS.map(k => 'event:' + k),
+    ...EVENT_KEYS.map(k => 'eventNext:' + k), ...WONDER_KEYS.map(k => 'wonderPool:' + k),
+    ...WONDER_KEYS.map(k => 'wonderBuilt:' + k)];
+  const GAME_F = GAME_NAMES.length;
   const GLOB_N = GAME_F + NSEAT * SEAT_F;
+  const GLOB_NAMES = GAME_NAMES.concat(...Array.from({ length: NSEAT }, (_, k) => SEAT_NAMES.map(x => 'seat' + k + ':' + x)));
 
   function seatVec(S, pi, me, out, o) {
     const p = S.players[pi];
-    const n = S.players.length;
+    const n = empireCount(S);
     const inc = E.income(S, pi);
     const w = worldPop(S) || 1;
     const opt = E.victoryOption(S, p);
@@ -130,30 +164,54 @@ function makeFeatures(E, konst) {
     out[i++] = E.powerOf ? E.powerOf(S, pi) / 20 : 0;
     out[i++] = (S.claims || []).some(c => c.pi === pi) ? 1 : 0;
     const ci = CIV_KEYS.indexOf(p.civ); if (ci >= 0) out[i + ci] = 1; i += CIV_KEYS.length;
-    const ai = ABILS.indexOf(p.civ + ':' + p.ability); if (ai >= 0) out[i + ai] = 1; i += ABILS.length;
+    // one ability, or the two drafted ones in the marathon
+    for (const a of abilitiesOf(p)) { const ai = ABILS.indexOf(a); if (ai >= 0) out[i + ai] = 1; }
+    i += ABILS.length;
     for (const k in p.techs) if (k in TECH_IDX) out[i + TECH_IDX[k]] = 1; i += NT;
     for (const k in p.avail) if (k in TECH_IDX && p.avail[k]) out[i + TECH_IDX[k]] = 1; i += NT;
+    for (const x of (S.wonders || [])) if (x.owner === pi && x.k in WONDER_IDX) out[i + WONDER_IDX[x.k]] = 1;
+    i += NW;
+    out[i++] = S.wo ? wonderCost(S, pi) / 40 : 0;
+    out[i++] = p.cultureWin != null ? 1 : 0;
   }
 
   function glob(S, me) {
     const out = new Float32Array(GLOB_N);
+    const n = empireCount(S);
     out[0] = S.round / 15;
-    out[1] = S.players.length / 8;
+    out[1] = n / 8;
     out[2] = S.duel ? 1 : 0;
     out[3] = S.marathon ? 1 : 0;
     out[4] = S.wo ? 1 : 0;
     out[5] = S.ev ? 1 : 0;
     out[6] = (S.claims || []).length ? 1 : 0;
     out[7] = worldPop(S) / 40;
-    // v1 plays up to NSEAT empires; with more, the seats after the first NSEAT are left out
-    const n = S.players.length;
+    out[8] = S.ev && S.ev.mode === 'easy' ? 1 : 0;
+    out[9] = S.nukeBan ? 1 : 0;
+    out[10] = S.players.some(p => p.kind === 'barbar' && !p.dead) ? 1 : 0;
+    let i = 11;
+    // this round's event, and the next one when the observer may see it (the oracle). Never
+    // rolled here: peekNextEvent would roll the dice.
+    const ek = e => EVENT_KEYS.indexOf(e.k);
+    if (S.event && S.event.round === S.round && S.event.k) out[i + ek(S.event)] = 1;
+    i += NE;
+    if (S.evNext && S.evNext.k && hasWonder(S, me, 'orakel')) out[i + ek(S.evNext)] = 1;
+    i += NE;
+    if (S.wo) for (const lvl of [1, 2, 3]) for (const k of ((S.wpool && S.wpool[lvl]) || [])) if (k in WONDER_IDX) out[i + WONDER_IDX[k]] = 1;
+    i += NW;
+    for (const x of (S.wonders || [])) if (x.k in WONDER_IDX) out[i + WONDER_IDX[x.k]] = 1;
     for (let k = 0; k < Math.min(n, NSEAT); k++) seatVec(S, (me + k) % n, me, out, GAME_F + k * SEAT_F);
     return out;
   }
 
   // ---------------------------------------------------------------- candidates
-  const NUM_F = 24;
-  const CAND_F = CAND_TYPES.length + NT + NUM_F;
+  const NUM_NAMES = ['powerN', 'strikeN', 'defendN', 'dv', 'spent', 'ratio', 'gain',
+    'dResSci', 'dResFood', 'dResCoins', 'dIncSci', 'dIncFood', 'dIncCoins', 'dPop', 'dCities', 'dArmies',
+    'dPower', 'dTechs', 'dEPop', 'dECities', 'dEArmies', 'win', 'lose', 'dvBase'];
+  const CAND_NAMES = [...CAND_TYPES.map(k => 'type:' + k), ...TECH_KEYS.map(k => 'tech:' + k), ...NUM_NAMES,
+    ...WONDER_KEYS.map(k => 'wonder:' + k)];
+  const CAND_F = CAND_NAMES.length;
+  const NUM_O = CAND_TYPES.length + NT, WONDER_O = NUM_O + NUM_NAMES.length;
 
   const typeOf = tag => {
     const t = tag.split(':')[0];
@@ -196,7 +254,8 @@ function makeFeatures(E, konst) {
     if (ty >= 0) out[o + ty] = 1;
     const parts = tag.split(':');
     if (parts[1] && parts[1] in TECH_IDX) out[o + CAND_TYPES.length + TECH_IDX[parts[1]]] = 1;
-    let i = o + CAND_TYPES.length + NT;
+    if (parts[0] === 'wonder' && parts[1] in WONDER_IDX) out[o + WONDER_O + WONDER_IDX[parts[1]]] = 1;
+    let i = o + NUM_O;
     const num = parts.slice(1).map(Number).filter(x => Number.isFinite(x));
     out[i++] = parts[0] === 'power' ? num[0] / 10 : 0;
     out[i++] = parts[0] === 'strike' ? (num[1] || 0) / 5 : 0;
@@ -279,7 +338,8 @@ function makeFeatures(E, konst) {
 
   return {
     grid, glob, evaluate, encodeCands,
-    dims: { GRID_C, GLOB_N, CAND_F, NSEAT, NT, CAND_TYPES, TECH_KEYS },
+    dims: { GRID_C, GLOB_N, CAND_F, NSEAT, NT, CAND_TYPES, TECH_KEYS, GRID_SCALE,
+      names: { grid: GRID_NAMES, glob: GLOB_NAMES, cand: CAND_NAMES } },
   };
 }
 

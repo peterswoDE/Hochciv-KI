@@ -16,18 +16,22 @@ import torch.nn.functional as F
 
 from .env import Agent, Obs
 
-# Integer scale of every map plane (features.js stores value / scale); used to keep the
-# planes as uint8 on disk and in memory.
-GRID_SCALE = np.array([1] * 8 + [3] * 3 + [1] * 4 + [5] * 4 + [1] + [1] * 4 + [4] + [2] + [1] * 4 + [2] + [1],
-                      dtype=np.float32)
+# Integer scale of every map plane of layout v1 (features.js stores value / scale); used to
+# keep the planes as uint8 on disk and in memory. Newer layouts bring theirs in dims.
+GRID_SCALE_V1 = np.array([1] * 8 + [3] * 3 + [1] * 4 + [5] * 4 + [1] + [1] * 4 + [4] + [2] + [1] * 4 + [2] + [1],
+                         dtype=np.float32)
 
 
 LOGIT_CAP = 15.0
 
 
-def grid_to_u8(grid: np.ndarray) -> np.ndarray:
+def grid_scale(dims) -> np.ndarray:
+    return np.array(dims["GRID_SCALE"], np.float32) if "GRID_SCALE" in dims else GRID_SCALE_V1
+
+
+def grid_to_u8(grid: np.ndarray, scale: np.ndarray) -> np.ndarray:
     """Quantize to uint8 and crop to the map (rows/columns with any terrain)."""
-    g = np.clip(np.rint(grid * GRID_SCALE[:, None, None]), 0, 255).astype(np.uint8)
+    g = np.clip(np.rint(grid * scale[:, None, None]), 0, 255).astype(np.uint8)
     terrain = g[:8].any(0)
     h = int(np.nonzero(terrain.any(1))[0].max()) + 1
     w = int(np.nonzero(terrain.any(0))[0].max()) + 1
@@ -72,7 +76,7 @@ class Net(nn.Module):
         self.dims = dict(dims)
         self.cfg = dict(ch=ch, blocks=blocks, d=d, layers=layers, heads=heads)
         C, G, CF = dims["GRID_C"], dims["GLOB_N"], dims["CAND_F"]
-        self.register_buffer("gscale", torch.tensor(GRID_SCALE[:C]))
+        self.register_buffer("gscale", torch.tensor(grid_scale(dims)[:C]))
         self.stem = nn.Sequential(nn.Conv2d(C, ch, 3, padding=1, bias=False), ChannelNorm(ch), nn.ReLU())
         self.tower = nn.ModuleList([ResBlock(ch) for _ in range(blocks)])
         self.glob = nn.Sequential(nn.Linear(G, d), nn.ReLU(), nn.Linear(d, d), nn.ReLU())
@@ -145,10 +149,17 @@ def save_net(net: Net, path, **extra):
     torch.save({"dims": net.dims, "cfg": net.cfg, "state": net.state_dict(), **extra}, path)
 
 
-def load_net(path, device="cuda") -> tuple[Net, dict]:
+def load_net(path, device="cuda", adapt=True) -> tuple[Net, dict]:
+    """With `adapt`, a checkpoint of an older observation layout is widened to the bridge's
+    current one (widen.py), so old checkpoints keep working with the current bridge."""
     ck = torch.load(path, map_location=device, weights_only=False)
     net = Net(ck["dims"], **ck["cfg"]).to(device)
     net.load_state_dict(ck["state"])
+    if adapt:
+        from .widen import current_dims, widen
+        dims = current_dims()
+        if net.dims.get("names") != dims["names"]:
+            net, _ = widen(net, dims)
     net.eval()
     return net, ck
 
@@ -159,11 +170,12 @@ class NetAgent(Agent):
 
     def __init__(self, net: Net, device="cuda", greedy=True, temperature=1.0):
         self.net, self.device, self.greedy, self.temperature = net, device, greedy, temperature
+        self.scale = grid_scale(net.dims)
         self._lock = threading.Lock()
 
     @torch.no_grad()
     def act(self, obs: Obs):
-        sample = (grid_to_u8(obs.grid), obs.glob, obs.cand, obs.pos)
+        sample = (grid_to_u8(obs.grid, self.scale), obs.glob, obs.cand, obs.pos)
         with self._lock:
             logits, v = self.net(*collate([sample], self.device))
         logits = logits[0]
