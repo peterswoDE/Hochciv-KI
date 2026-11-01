@@ -93,8 +93,8 @@ Bridge game options: `events`, `eventMode` (`hard`/`easy`), `wonders`; maps `mar
 marathon rules).
 
 ```
-.venv\Scripts\python -m hochciv_ki.eval_modes --agent ckpt:checkpoints1w.pt --suite v2
-.venv\Scripts\python -m hochciv_ki.train_ppo --init checkpoints1w.pt --out checkpoints\ppo2 --mix v2 --lr 3e-5 --target-kl 0.05 --imit 0.1 --imit-half 150
+.venv\Scripts\python -m hochciv_ki.eval_modes --agent ckpt:checkpoints\v1w.pt --suite v2
+.venv\Scripts\python -m hochciv_ki.train_ppo --init checkpoints\v1w.pt --out checkpoints\ppo2 --mix v2 --lr 3e-5 --target-kl 0.05 --imit 0.1 --imit-half 150
 ```
 
 Baseline before v2 training: the widened v1 model against KI schwer (seeds 90000+):
