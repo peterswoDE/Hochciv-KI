@@ -86,10 +86,15 @@ def seat(s):
     return {"kind": "ki", "kiLevel": lvl} if kind == "ki" else {"kind": "bot", "diff": lvl}
 
 
-def phi(prog, me, beta, n0):
+BETA_MAX = 8.0
+
+
+def phi(prog, me, rnd, n0, slope=1.0):
     """Potential for reward shaping (DESIGN_SHAPING.md): the soft share of the win
     softmax(beta * progress²) of seat `me` over the seats that can still win, minus the fair
-    share 1/n0 at the start of the game."""
+    share 1/n0 at the start of the game. beta = min(8, slope * (round − 1)) – fitted on KI
+    games (calibrate_phi.py): progress says nothing in round 1 and more every round."""
+    beta = min(BETA_MAX, slope * (rnd - 1))
     if not prog or prog[me] < 0:
         return -1.0 / n0
     x = beta * np.array([p for p in prog if p >= 0], np.float64) ** 2
@@ -97,8 +102,8 @@ def phi(prog, me, beta, n0):
     return float(np.exp(beta * prog[me] ** 2 - m) / np.exp(x - m).sum()) - 1.0 / n0
 
 
-def gae(traj, z, lam, shape=0.0, beta=4.0):
-    """traj: list of (sample, a, logp, v, teacher, prog, pi). Reward z at the end, gamma 1.
+def gae(traj, z, lam, shape=0.0, slope=1.0):
+    """traj: list of (sample, a, logp, v, teacher, prog, pi, round). Reward z at the end, gamma 1.
     shape > 0 adds c * (Φ(s') − Φ(s)) to the advantages, Φ(end) = 0; the value targets stay
     on the unshaped reward (the value head is the chance to win)."""
     n = len(traj)
@@ -110,7 +115,7 @@ def gae(traj, z, lam, shape=0.0, beta=4.0):
     if shape:
         prog0 = traj[0][5]
         n0 = sum(1 for x in prog0 if x >= 0) if prog0 else 2
-        ph = np.array([phi(x[5], x[6], beta, n0) for x in traj], np.float32)
+        ph = np.array([phi(x[5], x[6], x[7], n0, slope) for x in traj], np.float32)
         delta = base + shape * (np.append(ph[1:], 0.0) - ph)
     else:
         delta = base
@@ -209,7 +214,7 @@ def main():
     ap.add_argument("--imit", type=float, default=0.3, help="initial imitation weight")
     ap.add_argument("--imit-half", type=float, default=100, help="iterations until it halves")
     ap.add_argument("--shape", type=float, default=0.0, help="weight of the shaped reward (0: off)")
-    ap.add_argument("--shape-beta", type=float, default=4.0, help="sharpness of the soft win share")
+    ap.add_argument("--shape-slope", type=float, default=1.0, help="sharpness of the soft win share per round")
     ap.add_argument("--eval-every", type=int, default=10)
     ap.add_argument("--eval-seeds", type=int, default=60)
     ap.add_argument("--snap-every", type=int, default=10)
@@ -253,7 +258,7 @@ def main():
             batch, wins, games_vs_ki, steps, shaped = [], 0.0, 0, 0, []
             for recs, info in results:
                 for rec, z in recs:
-                    adv, ret = gae(rec, z, args.lam, args.shape, args.shape_beta)
+                    adv, ret = gae(rec, z, args.lam, args.shape, args.shape_slope)
                     if args.shape:
                         shaped.append(float((adv - gae(rec, z, args.lam)[0]).std()))
                     for k, (sample, a, logp, v, teacher, *_) in enumerate(rec):
@@ -311,7 +316,7 @@ def collect(bridge, dims, job, learner, snap):
                    and r.slot_of.get(pi) in learner_slots]
     for pi in learner_pis:
         z = r.score(pi) if r.over else 1.0 / len(players)
-        recs.append(([(e["sample"], a, e["logp"], e["v"], obs.teacher, obs.prog, obs.pi)
+        recs.append(([(e["sample"], a, e["logp"], e["v"], obs.teacher, obs.prog, obs.pi, obs.round)
                       for obs, a, e in r.trajectories[pi]], z))
     vs_ki = all(s == "L" or s.startswith("ki") for s in seats) and seats.count("L") == 1
     score = r.score(learner_pis[0]) if (vs_ki and learner_pis) else 0.0

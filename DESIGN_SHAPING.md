@@ -1,6 +1,6 @@
 # Reward shaping for PPO – design
 
-Status: draft (2026-11-02), not implemented.
+Status: implemented (2026-11-02); run B (`checkpoints/ppo3`) started the same day.
 
 ## Why
 
@@ -55,45 +55,59 @@ Per seat `i`, a **victory progress** in [0, 1]: the furthest it is along any vic
 | Path | Progress | Engine source |
 |---|---|---|
 | Economic | `min(1, popOf(i) / worldPop / frac)`, `frac` from `victoryOption` (duel, UN, theology) | `checkVictory` |
-| Science | fields with an age-3 tech / number of fields (`singularityReady`), plus a bit per age reached | `applyTech`, `singularityReady` |
-| Culture (wonders on) | wonder levels toward a level-3 wonder, 1 with `cultureWin` | `wonderCounts`, `checkCultureVictory` |
-| Military (marathon) | `capitalsTaken / capitalsToWin` (outside the marathon one capture ends the game, so 0) | `captureCity` |
+| Science | `0.9 · mean over the 4 fields of (highest age reached + 1) / 4`: one age-3 tech in every field makes the Singularity researchable | `applyTech`, `singularityReady` |
+| Culture (wonders on) | `0.9 · (min(level 1, 3) + min(level 2, 2)) / 5` (the pyramid rule needs 3 + 2 before a level 3), 1 with a level-3 wonder | `wonderCounts`, `wonderLevelOk`, `checkCultureVictory` |
+| Military | `(capitalsTaken + best running siege of an enemy capital / 2) / capitalsToWin`: a capture takes two successful siege turns in a row | `captureCity`, `combatPhase` (`S.sieges`) |
 | Claim | 1 once the seat has a claim this round | `claimVictory` |
 
-`prog_i = max` over the paths; dead seats and barbarians count as 0 and can't win.
+`prog_i = max` over the paths; dead seats and barbarians can't win and are left out.
 
 From the progress of all seats, a **soft share of the win**:
 
 ```
 w_i  = exp(β · prog_i²) / Σ_j exp(β · prog_j²)        # over living, winnable seats
-Φ(s) = w_me − 1 / n
+Φ(s) = w_me − 1 / n                                   # n: seats that could win at the start
+β    = min(8, round − 1)                              # fitted, see below
 ```
 
 It sums to 1 over the seats like the real score, starts near 0 for everybody (fair share), and
 scales with the number of empires. The square makes progress count more near the goal, like the
-KI's own `40 · q⁶` term in `kiVictory`. The exact science and culture formulas get settled
-while implementing, against the engine's rules.
+KI's own `40 · q⁶` term in `kiVictory`. β depends on the round, which is part of the state, so
+Φ is still a potential and the shaping still telescopes.
 
 ### Calibrating β and checking Φ
 
-Before any training: record about 2000 games KI schwer vs KI schwer over the v2 modes and log
-Φ at every turn together with the outcome.
+`calibrate_phi.py` plays KI schwer against itself over the v2 modes (player counts 2–8, the
+training maps and options), records every seat's progress at the start of each round and the
+winners, and fits β by log loss. Φ is only worth using if it predicts the winner better than
+chance well before the end.
 
-- β is fitted so that `w_i` predicts the winner best (log loss), separately checked per
-  player count.
-- Φ is only worth using if it predicts the winner clearly better than chance well before the
-  end, say by the middle of the game. If it doesn't, the shaping would only add noise, and we
-  revise Φ before spending GPU hours.
+Result on 1000 games (`runs/calib_phi.log`): the games are short (median 6 rounds, 90 % within
+9) and end by military victory 43 %, science 32 %, economy 22 %, culture 3 %. Without the siege
+term the military path was invisible outside the marathon. A single β (best: 4) was
+overconfident early – worse than the uniform guess in the first quarter of a game. Fitted per
+round, the best β grows by about one per round:
+
+| Round | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8+ |
+|---|---|---|---|---|---|---|---|---|
+| best β | 0 | 1 | 2 | 3 | 4 | 6 | 6 | 8 |
+| log loss uniform → Φ | 1.23 → 1.23 | 1.23 → 1.22 | 1.23 → 1.19 | 1.23 → 1.14 | 1.20 → 1.05 | 1.16 → 0.90 | 1.19 → 0.85 | 1.28 → 0.79 |
+
+With `β = min(8, round − 1)`, Φ is never worse than the uniform guess and better for every
+player count (log loss uniform → Φ: 2p 0.69 → 0.63, 3p 1.10 → 0.94, 4p 1.39 → 1.21, 6p
+1.79 → 1.68, 8p 2.08 → 1.89). The seat with the highest Φ wins 43 % of the time in the second
+quarter of a game, 55 % in the third and 69 % in the last (uniform: 17–50 % by player
+count). In round 1, Φ is exactly 0 for everybody, so the noisy start adds nothing.
 
 ### Code changes
 
 | Where | Change |
 |---|---|
-| `bridge/worker.js` `observe` | adds `prog`: the victory progress per seat (cheap: pop, techs, wonders, capitals, claims – no simulation) |
-| `bridge/features.js` | the progress function, next to `seatVec` (which already has the economic share) |
-| `hochciv_ki/env.py` | `Obs.prog`; `play_game` records the final progress too |
-| `hochciv_ki/train_ppo.py` | `phi()` from `prog`, `gae()` with the shaping term, flags `--shape` (c) and `--shape-beta` (β); logs the mean shaping reward |
-| `hochciv_ki/calibrate_phi.py` (new) | records KI-vs-KI games, fits β, prints how well Φ predicts the winner by game phase |
+| `bridge/features.js` | `progress(S)`: every seat's progress by path (cheap: pop, techs, wonders, capitals, sieges, claims – no simulation) |
+| `bridge/worker.js` | `observe` sends `prog` (per player index, −1 for seats that can't win); command `progress` for the calibration |
+| `hochciv_ki/env.py` | `Obs.prog` |
+| `hochciv_ki/train_ppo.py` | `phi()`, `gae()` with the shaping term, flags `--shape` (c) and `--shape-slope` (β per round); logs `shape_std`, how much the shaping moves the advantages |
+| `hochciv_ki/calibrate_phi.py` | plays KI-vs-KI games, fits β, prints how well Φ predicts the winner by phase, player count and round |
 
 No change to the network or the observation layout, so all existing checkpoints keep working.
 
@@ -108,19 +122,18 @@ No change to the network or the observation layout, so all existing checkpoints 
 
 ## Experiment
 
-Two runs from `checkpoints/v2.pt`, one after the other (the PC can't run both at full speed):
+Decided 2026-11-02: only run B (shaping plus the changes 2 and 3), from `checkpoints/v2.pt`,
+80 iterations (about 7–8 hours):
 
-| Run | Flags | Purpose |
-|---|---|---|
-| A | `--lr 1e-4 --imit 0.03`, no shaping | Does less anchoring alone help? |
-| B | as A, plus `--shape 1` | Does the shaping help on top? |
+```
+python -m hochciv_ki.train_ppo --init checkpoints/v2.pt --out checkpoints/ppo3 --mix v2 --iters 80 --lr 1e-4 --target-kl 0.05 --imit 0.03 --imit-half 150 --shape 1 --eval-every 20 --eval-seeds 120
+```
 
-Each 80 iterations, about 7–8 hours. Afterwards the full suite on both `best.pt` files and on
-`v2`. A model replaces `v2` only if its mean relative score is higher and no mode is clearly
-worse (beyond its CI).
-
-If run A already gets worse than `v2` quickly (two half-suite evaluations in a row clearly
-below), it is stopped early: the learning rate is then too high, and B gets `--lr 5e-5`.
+Afterwards the full suite on its `best.pt` against `v2`. It replaces `v2` only if its mean
+relative score is higher and no mode is clearly worse (beyond its CI). If it gets worse than
+`v2` quickly (two half-suite evaluations in a row clearly below), it is stopped early and
+restarted with `--lr 5e-5`. Without a run A, a gain can't be split between the shaping and the
+looser anchor.
 
 ## Later, not in this round
 

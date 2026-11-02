@@ -49,8 +49,9 @@ def shares(prog, beta):
     return e / e.sum()
 
 
-def records(games):
-    """(phase, n, prog, target) per game round; target = share of the win per seat."""
+def records(games, by_round=False):
+    """(phase, n, prog, target) per game round; target = share of the win per seat.
+    by_round: the round number instead of the phase."""
     out = []
     for g in games:
         if not g["over"] or not g["winners"]:
@@ -60,7 +61,7 @@ def records(games):
                 continue
             tgt = np.zeros(len(prog))
             tgt[g["winners"]] = 1.0 / len(g["winners"])
-            out.append(((rnd - 1) / max(1, g["last_round"]), g["n"], prog, tgt))
+            out.append((rnd if by_round else (rnd - 1) / max(1, g["last_round"]), g["n"], prog, tgt))
     return out
 
 
@@ -140,6 +141,16 @@ def main():
         rs = [r for r in recs if r[1] == n and r[0] < 0.5]
         print(f"  {n}p  {len(rs):6d} rounds  {log_loss(rs, None):.3f} / {log_loss(rs, best):.3f}"
               f"  top seat wins {accuracy(rs, best):.2f} (chance {1 / n:.2f})")
+
+    print("\nbest beta by round (train_ppo uses min(8, slope * (round - 1))):")
+    rr = records(games, by_round=True)
+    for rnd in range(1, 11):
+        rs = [r for r in rr if (r[0] == rnd if rnd < 10 else r[0] >= 10)]
+        if rs:
+            f = {b: log_loss(rs, b) for b in [0.5] + BETAS[1:6] + [8]}
+            b = min(f, key=f.get)
+            print(f"  round {rnd}{'+' if rnd == 10 else ' '} {len(rs):5d}  uniform {log_loss(rs, None):.3f}"
+                  f"  best beta {b} -> {f[b]:.3f}")
 
 
 if __name__ == "__main__":
