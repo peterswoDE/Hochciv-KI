@@ -284,11 +284,15 @@ class Brain:
     """The local engine copy plus the agent. One turn = repeated (load, observe, act). Shared by
     all games: one decision at a time."""
 
-    def __init__(self, agent_spec, engine_dir=None):
+    def __init__(self, agent_spec, engine_dir=None, device="auto"):
         self.bridge = Bridge(engine_dir)
         info = self.bridge.info()
         self.version, self.dims = info["version"], info["dims"]
-        self.agent = agent_factory(agent_spec)()
+        if device == "auto":
+            import torch
+            device = "cuda" if torch.cuda.device_count() else "cpu"
+        self.device = device
+        self.agent = agent_factory(agent_spec, device=device)()
         self.spec = agent_spec
         self.lock = threading.Lock()
 
@@ -1245,11 +1249,13 @@ def main():
     ap.add_argument("--port", type=int, default=8765, help="control panel on http://127.0.0.1:PORT")
     ap.add_argument("--no-panel", action="store_true", help="run with the saved settings, no control panel")
     ap.add_argument("--open", action="store_true", help="open the control panel in the browser")
+    ap.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto",
+                    help="where a ckpt: network runs (auto: the GPU if there is one)")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     env = read_env(args.config)
-    brain = Brain(args.agent)
-    log.info("engine %s, agent %s", brain.version, args.agent)
+    brain = Brain(args.agent, device=args.device)
+    log.info("engine %s, agent %s on %s", brain.version, args.agent, brain.device)
     acc = Account(env["HOCHCIV_URL"], env.get("HOCHCIV_USER"), env.get("HOCHCIV_PASSWORD"),
                   token=env.get("HOCHCIV_TOKEN"), name=env.get("HOCHCIV_NAME"))
     mgr = Manager(acc, brain, args.settings)

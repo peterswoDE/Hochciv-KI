@@ -148,7 +148,9 @@ regular account that logs in with a password only.)
 
 It logs in with the token (`POST /api/auth/bot`) and opens a control panel on
 <http://127.0.0.1:8765/> (`--port`, `--open` opens it in the browser, `--no-panel` runs with
-the saved settings). The panel shows the running games, the public lobbies and open
+the saved settings, `--device cpu|cuda` where a `ckpt:` network runs; the default takes the GPU
+if there is one). The network needs no GPU: on the CPU a move takes about 4 ms, slightly less than
+on the GPU. The panel shows the running games, the public lobbies and open
 Rundenspiele with a *Join* button, the log, and the settings in a column on the right. Every
 change is saved at once (`runs/online-settings.json`). The switches work together:
 
