@@ -292,6 +292,8 @@ function observe(g, wantGrid = true) {
   const out = {
     pi, round: S.round, tags: tags.concat(['end']), teacher: ev.teacher,
     glob: b64(FEAT.glob(S, pi)), cand: b64(cand), pos: b64(pos),
+    // victory progress per player index, -1 for seats that can't win (barbarians, dead)
+    prog: FEAT.progress(S).map(x => (x && !x.dead ? x.prog : -1)),
   };
   if (wantGrid) { const gr = FEAT.grid(S, pi); out.grid = b64(gr); out.gshape = [gr.h, gr.w]; }
   return out;
@@ -449,6 +451,8 @@ const handlers = {
   ki_turn: a => { kiTurnFull(game(a)); return status(game(a)); },
   state: a => ({ state: game(a).S }),
   status: a => status(game(a)),
+  // victory progress of every seat by path (calibrate_phi.py)
+  progress: a => ({ progress: FEAT.progress(game(a).S) }),
   close: a => { games.delete(a.gid); return {}; },
 };
 function game(a) {

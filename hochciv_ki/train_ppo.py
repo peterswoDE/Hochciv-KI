@@ -86,19 +86,44 @@ def seat(s):
     return {"kind": "ki", "kiLevel": lvl} if kind == "ki" else {"kind": "bot", "diff": lvl}
 
 
-def gae(traj, z, lam):
-    """traj: list of (sample, a, logp, v, teacher). Reward z at the end, gamma 1."""
+def phi(prog, me, beta, n0):
+    """Potential for reward shaping (DESIGN_SHAPING.md): the soft share of the win
+    softmax(beta * progress²) of seat `me` over the seats that can still win, minus the fair
+    share 1/n0 at the start of the game."""
+    if not prog or prog[me] < 0:
+        return -1.0 / n0
+    x = beta * np.array([p for p in prog if p >= 0], np.float64) ** 2
+    m = x.max()
+    return float(np.exp(beta * prog[me] ** 2 - m) / np.exp(x - m).sum()) - 1.0 / n0
+
+
+def gae(traj, z, lam, shape=0.0, beta=4.0):
+    """traj: list of (sample, a, logp, v, teacher, prog, pi). Reward z at the end, gamma 1.
+    shape > 0 adds c * (Φ(s') − Φ(s)) to the advantages, Φ(end) = 0; the value targets stay
+    on the unshaped reward (the value head is the chance to win)."""
     n = len(traj)
-    adv = np.zeros(n, np.float32)
-    nxt_v, acc = 0.0, 0.0
-    for t in range(n - 1, -1, -1):
-        r = z if t == n - 1 else 0.0
-        v = traj[t][3]
-        delta = r + nxt_v - v
-        acc = delta + lam * acc
-        adv[t] = acc
-        nxt_v = v
-    ret = adv + np.array([x[3] for x in traj], np.float32)
+    v = np.array([x[3] for x in traj], np.float32)
+    nxt = np.append(v[1:], 0.0)
+    r = np.zeros(n, np.float32)
+    r[-1] = z
+    base = r + nxt - v
+    if shape:
+        prog0 = traj[0][5]
+        n0 = sum(1 for x in prog0 if x >= 0) if prog0 else 2
+        ph = np.array([phi(x[5], x[6], beta, n0) for x in traj], np.float32)
+        delta = base + shape * (np.append(ph[1:], 0.0) - ph)
+    else:
+        delta = base
+
+    def disc(d):
+        out, acc = np.zeros(n, np.float32), 0.0
+        for t in range(n - 1, -1, -1):
+            acc = d[t] + lam * acc
+            out[t] = acc
+        return out
+
+    adv = disc(delta)
+    ret = (adv if delta is base else disc(base)) + v
     return adv, ret
 
 
@@ -183,6 +208,8 @@ def main():
     ap.add_argument("--lam", type=float, default=0.95)
     ap.add_argument("--imit", type=float, default=0.3, help="initial imitation weight")
     ap.add_argument("--imit-half", type=float, default=100, help="iterations until it halves")
+    ap.add_argument("--shape", type=float, default=0.0, help="weight of the shaped reward (0: off)")
+    ap.add_argument("--shape-beta", type=float, default=4.0, help="sharpness of the soft win share")
     ap.add_argument("--eval-every", type=int, default=10)
     ap.add_argument("--eval-seeds", type=int, default=60)
     ap.add_argument("--snap-every", type=int, default=10)
@@ -223,11 +250,13 @@ def main():
                 jobs.append({"seed": 50_000_000 + it * 1000 + g, "seats": seats,
                              "map": rng.choice(maps), "opts": game_options(rng, args.mix)})
             results = pool.map(lambda b, j: collect(b, pool.dims, j, learner_srv, snap_srv), jobs)
-            batch, wins, games_vs_ki, steps = [], 0.0, 0, 0
+            batch, wins, games_vs_ki, steps, shaped = [], 0.0, 0, 0, []
             for recs, info in results:
                 for rec, z in recs:
-                    adv, ret = gae(rec, z, args.lam)
-                    for k, (sample, a, logp, v, teacher) in enumerate(rec):
+                    adv, ret = gae(rec, z, args.lam, args.shape, args.shape_beta)
+                    if args.shape:
+                        shaped.append(float((adv - gae(rec, z, args.lam)[0]).std()))
+                    for k, (sample, a, logp, v, teacher, *_) in enumerate(rec):
                         batch.append((sample, a, logp, adv[k], ret[k], teacher))
                 if info["vs_ki"]:
                     games_vs_ki += 1
@@ -241,6 +270,7 @@ def main():
             st["iter"] = it
             rec = {"iter": it, "samples": len(batch), "train_score_vs_ki": wins / max(1, games_vs_ki),
                    "collect_s": round(t1 - t0), "update_s": round(t2 - t1), "imit_w": imit,
+                   **({"shape_std": round(float(np.mean(shaped)), 4)} if shaped else {}),
                    **{k: (round(v, 4) if isinstance(v, float) else v) for k, v in stats.items()}}
             print(json.dumps(rec), flush=True)
             if it % args.snap_every == 0:
@@ -281,7 +311,8 @@ def collect(bridge, dims, job, learner, snap):
                    and r.slot_of.get(pi) in learner_slots]
     for pi in learner_pis:
         z = r.score(pi) if r.over else 1.0 / len(players)
-        recs.append(([(e["sample"], a, e["logp"], e["v"], obs.teacher) for obs, a, e in r.trajectories[pi]], z))
+        recs.append(([(e["sample"], a, e["logp"], e["v"], obs.teacher, obs.prog, obs.pi)
+                      for obs, a, e in r.trajectories[pi]], z))
     vs_ki = all(s == "L" or s.startswith("ki") for s in seats) and seats.count("L") == 1
     score = r.score(learner_pis[0]) if (vs_ki and learner_pis) else 0.0
     return recs, {"vs_ki": vs_ki, "score": score, "steps": r.steps}
