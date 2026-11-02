@@ -1,7 +1,7 @@
 """The online path without a server: one worker plays "server" (full rules, other seats), a
 second one is the bot client, which only gets states and answers with server actions.
 
-    python -m tests.test_online_offline [games]
+    python -m tests.test_online_offline [games] [ckpt path | agent spec, e.g. search:checkpoints/v2.pt]
 """
 from __future__ import annotations
 
@@ -28,7 +28,10 @@ def run(games=6, agent=None):
                 state = server.state(gid)
                 client.call("load", gid=1, state=state, pi=me)
                 obs = decode_obs(client.call("observe", gid=1), dims)
-                a, _ = agent.act(obs)
+                if getattr(agent, "needs_game", False):     # search: forks the loaded game
+                    a, _ = agent.act(obs, game=(client, 1))
+                else:
+                    a, _ = agent.act(obs)
                 res = client.call("step_online", gid=1, i=a)
                 for typ, params in res["actions"]:
                     r = server.call("server_action", gid=gid, type=typ, params=params)
@@ -50,7 +53,10 @@ def run(games=6, agent=None):
 if __name__ == "__main__":
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 6
     agent = None
-    if len(sys.argv) > 2:          # a checkpoint: the network plays instead of the teacher
-        from hochciv_ki.model import load_agent
-        agent = load_agent(sys.argv[2])
+    if len(sys.argv) > 2:          # a checkpoint or agent spec: plays instead of the teacher
+        from hochciv_ki.eval import agent_factory
+        spec = sys.argv[2]
+        if not spec.startswith(("ckpt:", "ckpts:", "search:", "teacher", "kiturn")):
+            spec = "ckpt:" + spec
+        agent = agent_factory(spec)()
     sys.exit(1 if run(n, agent) else 0)

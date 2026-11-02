@@ -117,6 +117,14 @@ def agent_factory(spec: str, device="cuda"):
         from .model import load_agent
         greedy, path = spec.startswith("ckpt:"), spec.split(":", 1)[1]
         return lambda: load_agent(path, device=device, greedy=greedy)
+    if spec.startswith("search:"):
+        # search:<path>[:k] – one-step look-ahead with the value head (search.py)
+        from .model import load_agent
+        from .search import SearchAgent
+        path, k = spec.split(":", 1)[1], 4
+        if path.rsplit(":", 1)[-1].isdigit():
+            path, k = path.rsplit(":", 1)[0], int(path.rsplit(":", 1)[1])
+        return lambda: SearchAgent(load_agent(path, device=device), k=k)
     raise ValueError(spec)
 
 

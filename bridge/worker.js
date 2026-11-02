@@ -386,6 +386,32 @@ function load(a) {
   return Object.assign({ gid }, status(g));
 }
 
+/* A copy of game `gid` for the search (DESIGN_SEARCH.md), as a new game. Only the player on
+   turn stays an agent; every other seat that isn't a bot or the barbarians is played by KI
+   schwer (the opponent model, also for people online). Hidden randomness is not copied: a new
+   seed, and the pre-rolled event of the next round is rolled again. The turn context comes
+   along, including the candidate list of the last observe, so step indices stay valid. */
+function fork(a) {
+  const g = game(a), S0 = g.S, pi = S0.cur;
+  const S = E.kiClone(S0, a.seed | 0);
+  delete S.kiSim;
+  S.evNext = null;
+  S.players.forEach((p, i) => {
+    if (i !== pi && p.kind !== 'bot' && p.kind !== 'barbar') { p.kind = 'ki'; p.kiLevel = 'schwer'; }
+  });
+  const f = { S, agents: new Set([pi]), turn: null };
+  const t = g.turn;
+  if (t && t.pi === pi && t.round === S.round) {
+    f.turn = Object.assign({}, t, {
+      K: E.kiContext(S, pi), memo: { committed: new Set(t.memo.committed || []) },
+      failed: new Set(t.failed), cands: t.cands && t.cands.slice(),
+    });
+  }
+  const gid = Math.max(...games.keys()) + 1;
+  games.set(gid, f);
+  return Object.assign({ gid }, status(f));
+}
+
 /* Online "end": position armies and use picks (recorded), then the server's endTurn. */
 function endOnline(g) {
   const S = g.S, pi = S.cur, t = turnCtx(g);
@@ -469,6 +495,7 @@ const handlers = {
   ki_turn: a => { kiTurnFull(game(a)); return status(game(a)); },
   state: a => ({ state: game(a).S }),
   status: a => status(game(a)),
+  fork: a => fork(a),
   // victory progress of every seat by path (calibrate_phi.py)
   progress: a => ({ progress: FEAT.progress(game(a).S) }),
   close: a => { games.delete(a.gid); return {}; },

@@ -96,7 +96,10 @@ def play_game(bridge: Bridge, dims, players, agents: dict, seed, map_key="plaett
                 steps += 1
                 continue
             obs = decode_obs(bridge.call("observe", gid=gid), dims)
-            a, extra = by_pi[pi].act(obs)
+            if getattr(by_pi[pi], "needs_game", False):     # search: plays on copies of the game
+                a, extra = by_pi[pi].act(obs, game=(bridge, gid))
+            else:
+                a, extra = by_pi[pi].act(obs)
             if record:
                 traj[pi].append((obs, a, extra))
             st = bridge.step(gid, a)

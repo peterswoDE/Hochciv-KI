@@ -64,6 +64,12 @@ new model can be checked head to head, not only against the KI (in `eval` and `e
 
 A network against itself scores exactly the fair share (every seed from every seat).
 
+`search:<path>[:k]` plays a network with a one-step look-ahead (`hochciv_ki/search.py`,
+DESIGN_SEARCH.md): the policy's top k candidates (default 4) are tried on copies of the game
+and scored with the value head, "end" after the other seats' turns played by KI schwer. It works
+in `eval`, `eval_modes` and the online client (`--agent search:checkpoints2.pt`, at most 15 s
+of search per turn); about 0.1–0.6 s per decision.
+
 Baselines (engine v98, tile map, against KI schwer; score = share of wins, fair share 1/n):
 
 | Agent | 2 players | 4 players |

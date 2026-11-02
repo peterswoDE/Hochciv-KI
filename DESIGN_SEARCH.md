@@ -1,6 +1,12 @@
 # Search at decision time – design
 
-Status: draft (2026-11-02), not implemented.
+Status: stage 1 implemented (2026-11-02, `hochciv_ki/search.py`), not yet measured.
+
+Found while building: the fork is unbiased (its estimate of "end" 0.610 against the real value
+at the next turn start 0.591, correlation 0.99 over 27 turn ends), and "end" usually scores far
+below acting – unspent resources expire at the turn's end. So "end" is only searched when the
+policy ranks it in its top k or gives it at least 10 %; that cut a 4-player game from 110 s to
+26 s.
 
 ## Why
 

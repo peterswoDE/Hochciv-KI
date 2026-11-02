@@ -280,6 +280,9 @@ class Tagged(logging.LoggerAdapter):
         return f"[{self.extra['tag']}] {msg}", kwargs
 
 
+SEARCH_BUDGET = 15.0      # seconds of search per turn (search: agents)
+
+
 class Brain:
     """The local engine copy plus the agent. One turn = repeated (load, observe, act). Shared by
     all games: one decision at a time."""
@@ -293,6 +296,9 @@ class Brain:
             device = "cuda" if torch.cuda.device_count() else "cpu"
         self.device = device
         self.agent = agent_factory(agent_spec, device=device)()
+        if getattr(self.agent, "needs_game", False) and self.agent.budget is None:
+            # search: the shortest turn timer is 60 s, and one Brain serves every game
+            self.agent.budget = SEARCH_BUDGET
         self.spec = agent_spec
         self.lock = threading.Lock()
 
@@ -302,7 +308,10 @@ class Brain:
         with self.lock:
             self.bridge.call("load", gid=1, state=state, pi=pi)
             obs = decode_obs(self.bridge.call("observe", gid=1), self.dims)
-            a, _ = self.agent.act(obs)
+            if getattr(self.agent, "needs_game", False):
+                a, _ = self.agent.act(obs, game=(self.bridge, 1))
+            else:
+                a, _ = self.agent.act(obs)
             res = self.bridge.call("step_online", gid=1, i=a)
         return obs.tags[a], [tuple(x) for x in res["actions"]]
 

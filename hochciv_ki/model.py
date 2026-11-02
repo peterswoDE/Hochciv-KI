@@ -174,16 +174,21 @@ class NetAgent(Agent):
         self._lock = threading.Lock()
 
     @torch.no_grad()
-    def act(self, obs: Obs):
+    def evaluate(self, obs: Obs):
+        """Logits over the candidates (a tensor) and the value: the chance to win."""
         sample = (grid_to_u8(obs.grid, self.scale), obs.glob, obs.cand, obs.pos)
         with self._lock:
             logits, v = self.net(*collate([sample], self.device))
-        logits = logits[0]
+        return logits[0], float(torch.sigmoid(v[0]))
+
+    @torch.no_grad()
+    def act(self, obs: Obs):
+        logits, v = self.evaluate(obs)
         if self.greedy:
             a = int(logits.argmax())
         else:
             a = int(torch.distributions.Categorical(logits=logits / self.temperature).sample())
-        return a, {"v": float(torch.sigmoid(v[0]))}
+        return a, {"v": v}
 
 
 def load_agent(path, device="cuda", greedy=True):
