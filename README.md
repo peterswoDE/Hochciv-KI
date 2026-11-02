@@ -54,6 +54,16 @@ Plays complete games with a random agent against the JS KI and bots on tile, fix
 Agents: `kiturn` (the JS KI's full turn), `teacher` (the JS KI planner one step at a time, the
 imitation target), `ckpt:<path>` (a trained network). Every seed is played once per seat.
 
+`--opp` also takes networks, and a comma-separated list fills the opponent seats in turn, so a
+new model can be checked head to head, not only against the KI (in `eval` and `eval_modes`):
+
+```
+.venv\Scripts\python -m hochciv_ki.eval_modes --agent ckpt:checkpoints\ppo3\best.pt --opp ckpt:checkpoints\v2.pt
+.venv\Scripts\python -m hochciv_ki.eval --agent ckpt:a.pt --opp ckpt:b.pt,ki:schwer --players 4
+```
+
+A network against itself scores exactly the fair share (every seed from every seat).
+
 Baselines (engine v98, tile map, against KI schwer; score = share of wins, fair share 1/n):
 
 | Agent | 2 players | 4 players |

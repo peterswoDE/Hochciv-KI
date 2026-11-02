@@ -60,14 +60,14 @@ def main():
     args = ap.parse_args()
     kw = {"workers": args.workers} if args.workers else {}
     with BridgePool(**kw) as pool:
-        print(f"engine {pool.version}, {pool.workers} workers, agent {args.agent}", flush=True)
+        print(f"engine {pool.version}, {pool.workers} workers, agent {args.agent}, opp {args.opp}", flush=True)
         res = run_suite(pool, agent_factory(args.agent), args.suite, args.scale, args.base_seed, args.opp)
     print()
     for r in res:
         print(f"{r['mode']:42s} {r['score']:.3f} ± {r['ci95']:.3f}  fair {r['fair']:.3f}  ({r['games']} games)")
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:
-            json.dump({"agent": args.agent, "suite": args.suite, "results": res}, f, indent=1)
+            json.dump({"agent": args.agent, "opp": args.opp, "suite": args.suite, "results": res}, f, indent=1)
 
 
 if __name__ == "__main__":
