@@ -50,6 +50,24 @@ const CIV_BY_KEY = Object.fromEntries(CIVS.map(c => [c.k, c]));
 const armiesOf = konst('armiesOf');
 const FEAT = require('./features').makeFeatures(E, konst);
 
+/* Profiling (HOCHCIV_PROFILE=1, profile_collect.py): wall time per command and per engine or
+   feature function, inclusive. Off by default: then nothing is wrapped. */
+const PROF = process.env.HOCHCIV_PROFILE ? {} : null;
+function timed(name, f) {
+  return function (...args) {
+    const t0 = process.hrtime.bigint();
+    try { return f.apply(this, args); } finally {
+      const p = PROF[name] || (PROF[name] = { ms: 0, n: 0 });
+      p.ms += Number(process.hrtime.bigint() - t0) / 1e6;
+      p.n++;
+    }
+  };
+}
+if (PROF) {
+  for (const k of ['kiTurn', 'botTurn', 'endTurn', 'kiCandidates', 'kiClone']) E[k] = timed('engine.' + k, E[k]);
+  for (const k of ['evaluate', 'grid', 'glob', 'encodeCands', 'progress']) FEAT[k] = timed('feat.' + k, FEAT[k]);
+}
+
 /* ------------------------------------------------------------------ games */
 const MAX_TURN_STEPS = 60;
 const games = new Map();   // gid -> { S, agents: Set<pi>, turn: per-turn KI context or null }
@@ -455,6 +473,14 @@ const handlers = {
   progress: a => ({ progress: FEAT.progress(game(a).S) }),
   close: a => { games.delete(a.gid); return {}; },
 };
+if (PROF) {
+  for (const k in handlers) handlers[k] = timed('cmd.' + k, handlers[k]);
+  handlers.profile = () => {
+    const out = Object.assign({}, PROF);
+    for (const k in PROF) delete PROF[k];
+    return { profile: out };
+  };
+}
 function game(a) {
   const g = games.get(a.gid);
   if (!g) throw new Error('unknown game ' + a.gid);
