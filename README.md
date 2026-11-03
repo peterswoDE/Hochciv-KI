@@ -127,6 +127,13 @@ Baseline before v2 training: the widened v1 model against KI schwer (seeds 90000
 | 4p, marathon (40) | 0.250 ± 0.136 | 0.250 |
 | 3p, custom marathon map, wonders (30) | 0.500 ± 0.182 | 0.333 |
 
+## v3 (production model since 2026-11-03)
+
+`checkpoints/v3.pt` = run B' (`checkpoints/ppo4/best.pt`, iteration 80): PPO from v2 on the v2 mix
+with reward shaping (DESIGN_SHAPING.md), `--lr 5e-5 --target-kl 0.05 --imit 0.03 --shape 1`.
+Full v2 suite, same seeds: against KI schwer it ties v2 (mean relative score 1.184 each); head
+to head against v2 it scores 1.15, at or above the fair share in all 11 modes.
+
 ## Training
 
 ```
