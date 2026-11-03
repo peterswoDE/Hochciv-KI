@@ -1,6 +1,13 @@
 # Search at decision time – design
 
-Status: stage 1 implemented (2026-11-02, `hochciv_ki/search.py`), not yet measured.
+Status: stage 1 implemented (2026-11-02, `hochciv_ki/search.py`); first measurement 2026-11-03.
+
+Half v2 suite against KI schwer, same seeds for both (`runs/eval_v2_half.*`,
+`runs/eval_search_v2_half.*`): **search (k = 4) 1.31 against plain v2 1.26** mean relative score.
+Better in 6 modes, worse in 3, equal in 2; the biggest gains are 2p original map +0.20 (40 games)
+and 4p marathon +0.10 (20), the biggest loss 8p custom map −0.08 (24). Leaning positive, not
+proven (15–60 games per mode). It took about 6× as long as the plain network (2330 s against
+about 400 s; 4p marathon alone 891 s).
 
 Found while building: the fork is unbiased (its estimate of "end" 0.610 against the real value
 at the next turn start 0.591, correlation 0.99 over 27 turn ends), and "end" usually scores far
