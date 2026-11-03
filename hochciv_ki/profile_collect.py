@@ -29,6 +29,7 @@ def main():
     ap.add_argument("--games", type=int, default=56)
     ap.add_argument("--workers", type=int, default=14)
     ap.add_argument("--seed", type=int, default=12345)
+    ap.add_argument("--infer-wait", type=float, default=0.002, help="InferenceServer batch wait (s)")
     args = ap.parse_args()
 
     os.environ["HOCHCIV_PROFILE"] = "1"       # the workers inherit it
@@ -64,7 +65,8 @@ def main():
     ServerAgent.act = act
 
     net, _ = load_net(args.init, "cuda")
-    learner, snap = InferenceServer(net.eval(), "cuda"), InferenceServer(load_net(args.init, "cuda")[0].eval(), "cuda")
+    learner, snap = (InferenceServer(net.eval(), "cuda", wait=args.infer_wait),
+                     InferenceServer(load_net(args.init, "cuda")[0].eval(), "cuda", wait=args.infer_wait))
     rng = random.Random(args.seed)
     mix = MIXES[args.mix]
     jobs = []
@@ -90,6 +92,12 @@ def main():
                 js[k][1] += v["n"]
     learner.close()
     snap.close()
+    for name, srv in (("learner", learner), ("snapshot", snap)):
+        st = srv.stats
+        if st["batches"]:
+            print(f"inference {name}: {st['batches']} batches, {st['items'] / st['batches']:.1f} per batch, "
+                  f"{1000 * st['fwd_s'] / st['batches']:.1f} ms per batch (collate + forward), "
+                  f"{100 * st['fwd_s'] / wall:.0f} % of wall time busy")
 
     samples = sum(len(rec) for recs, _ in results for rec, _ in recs)
     busy = wall * args.workers

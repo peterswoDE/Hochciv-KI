@@ -64,7 +64,7 @@ function timed(name, f) {
   };
 }
 if (PROF) {
-  for (const k of ['kiTurn', 'botTurn', 'endTurn', 'kiCandidates', 'kiClone']) E[k] = timed('engine.' + k, E[k]);
+  for (const k of ['kiTurn', 'botTurn', 'endTurn', 'kiCandidates', 'kiClone', 'kiScore', 'kiSpent', 'income', 'kiStepMemo', 'kiContext']) E[k] = timed('engine.' + k, E[k]);
   for (const k of ['evaluate', 'grid', 'glob', 'encodeCands', 'progress']) FEAT[k] = timed('feat.' + k, FEAT[k]);
 }
 

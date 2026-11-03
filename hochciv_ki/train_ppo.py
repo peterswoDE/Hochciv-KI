@@ -14,8 +14,11 @@ from __future__ import annotations
 
 import argparse
 import copy
+import itertools
 import json
+import queue
 import random
+import threading
 import time
 from pathlib import Path
 
@@ -219,6 +222,7 @@ def main():
     ap.add_argument("--eval-seeds", type=int, default=60)
     ap.add_argument("--snap-every", type=int, default=10)
     ap.add_argument("--workers", type=int, default=None)
+    ap.add_argument("--continuous", action="store_true", help="keep every worker playing (class Collector)")
     args = ap.parse_args()
 
     device = "cuda"
@@ -243,18 +247,31 @@ def main():
     mix = MIXES[args.mix]
     rng = random.Random(12345 + st["iter"])
 
+    job_no = itertools.count(st["iter"] * 1000)
+
+    def make_job():
+        seats = rng.choices([m[1] for m in mix], weights=[m[0] for m in mix])[0]
+        maps = (MAPS_V2 if args.mix == "v2" else MAPS)[str(len(seats))]
+        return {"seed": 50_000_000 + next(job_no), "seats": seats, "map": rng.choice(maps),
+                "opts": game_options(rng, args.mix)}
+
     with BridgePool(**kw) as pool:
         print(f"engine {pool.version}, {pool.workers} workers, mix {args.mix}, start at iter {st['iter']}", flush=True)
+
+        def play(b, j):
+            return collect(b, pool.dims, j, learner_srv, snap_srv)
+
+        collector = Collector(pool, make_job, play) if args.continuous else None
+        if collector:
+            collector.resume()
         while st["iter"] < args.iters:
             it = st["iter"] + 1
             t0 = time.perf_counter()
-            jobs = []
-            for g in range(args.games):
-                seats = rng.choices([m[1] for m in mix], weights=[m[0] for m in mix])[0]
-                maps = (MAPS_V2 if args.mix == "v2" else MAPS)[str(len(seats))]
-                jobs.append({"seed": 50_000_000 + it * 1000 + g, "seats": seats,
-                             "map": rng.choice(maps), "opts": game_options(rng, args.mix)})
-            results = pool.map(lambda b, j: collect(b, pool.dims, j, learner_srv, snap_srv), jobs)
+            if collector:
+                results = collector.take(args.games)
+            else:
+                jobs = [make_job() for _ in range(args.games)]
+                results = pool.map(play, jobs)
             batch, wins, games_vs_ki, steps, shaped = [], 0.0, 0, 0, []
             for recs, info in results:
                 for rec, z in recs:
@@ -284,7 +301,11 @@ def main():
                 st["league"] = (st["league"] + [str(p)])[-8:]
                 snap_srv.load_state(load_net(rng.choice(st["league"]), device)[0].state_dict())
             if it % args.eval_every == 0:
+                if collector:
+                    collector.pause()
                 ev = evaluate(pool, net, device, args.eval_seeds, args.mix)
+                if collector:
+                    collector.resume()
                 rec["eval"] = ev
                 print(json.dumps({"iter": it, "eval": ev}), flush=True)
                 if st["best"] is None or best_key(ev) > best_key(st["best"]):
@@ -293,8 +314,59 @@ def main():
             st["history"].append(rec)
             save_net(net, out / "latest.pt", iter=it, opt=ppo.opt.state_dict())
             state_path.write_text(json.dumps(st, indent=1))
+        if collector:
+            collector.pause()
     learner_srv.close()
     snap_srv.close()
+
+
+class Collector:
+    """Continuous collection: every worker always plays a game, and an iteration takes the next
+    `n` finished games. Long games carry over into a later iteration instead of keeping the
+    other workers idle, and games go on during the network update. Every sample keeps the
+    log-probability and value of the policy that played it, so a game that spans an update is
+    still valid PPO data, one update stale. pause() lets the running games finish (their
+    results stay queued), so the pool is free for an evaluation."""
+
+    def __init__(self, pool, make_job, play):
+        self.pool, self.make_job, self.play = pool, make_job, play
+        self.done: queue.Queue = queue.Queue()
+        self.lock = threading.Lock()
+        self.running = 0
+        self.feeding = False
+
+    def _feed(self):
+        with self.lock:
+            if not self.feeding:
+                return
+            self.running += 1
+            job = self.make_job()
+        self.pool.submit(self.play, job).add_done_callback(self._finished)
+
+    def _finished(self, fut):
+        with self.lock:
+            self.running -= 1
+        self.done.put(fut)
+        self._feed()
+
+    def resume(self):
+        with self.lock:
+            self.feeding = True
+            missing = self.pool.workers - self.running
+        for _ in range(missing):
+            self._feed()
+
+    def pause(self):
+        with self.lock:
+            self.feeding = False
+        while True:
+            with self.lock:
+                if self.running == 0:
+                    return
+            time.sleep(0.2)
+
+    def take(self, n):
+        return [self.done.get().result() for _ in range(n)]
 
 
 def collect(bridge, dims, job, learner, snap):
