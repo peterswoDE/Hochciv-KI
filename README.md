@@ -11,7 +11,10 @@ py -3.13 -m venv .venv
 ```
 
 Node.js must be on the PATH. The rules engine is loaded read-only from
-`..\multiplayer-server\HochCiv\js`; set `HOCHCIV_ENGINE_DIR` to use another copy.
+`..\multiplayer-server\HochCiv\js`; set `HOCHCIV_ENGINE_DIR` to use another copy. That folder
+changes with the branch checked out there, so long runs use a frozen copy (`git archive` into
+`runs\engines\<version>`), and the online bot the engine production runs (for example
+`..\multiplayer-server\HochCiv-v98\js`).
 
 ## Selftest
 
