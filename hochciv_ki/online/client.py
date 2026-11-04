@@ -302,11 +302,11 @@ class Brain:
         self.spec = agent_spec
         self.lock = threading.Lock()
 
-    def next_actions(self, state, pi):
-        """Server actions for the next decision of seat `pi` (ends with endTurn when the turn
-        is over)."""
+    def next_actions(self, state, pi, key):
+        """Server actions for the next decision of seat `pi` in game `key` (ends with endTurn
+        when the turn is over)."""
         with self.lock:
-            self.bridge.call("load", gid=1, state=state, pi=pi)
+            self.bridge.call("load", gid=1, state=state, pi=pi, key=key)
             obs = decode_obs(self.bridge.call("observe", gid=1), self.dims)
             if getattr(self.agent, "needs_game", False):
                 a, _ = self.agent.act(obs, game=(self.bridge, 1))
@@ -314,6 +314,20 @@ class Brain:
                 a, _ = self.agent.act(obs)
             res = self.bridge.call("step_online", gid=1, i=a)
         return obs.tags[a], [tuple(x) for x in res["actions"]]
+
+    def refuse(self, key, tag):
+        """The server refused candidate `tag` of game `key`: not offered again this turn."""
+        with self.lock:
+            self.bridge.call("refuse", gid=1, key=key, tag=tag)
+
+    def end_actions(self, state, pi, key):
+        """Server actions that end the turn of seat `pi` like the "end" candidate: armies out
+        of the cities, open picks used, endTurn."""
+        with self.lock:
+            self.bridge.call("load", gid=1, state=state, pi=pi, key=key)
+            end = len(self.bridge.call("candidates", gid=1)["cands"]) - 1
+            res = self.bridge.call("step_online", gid=1, i=end)
+        return [tuple(x) for x in res["actions"]]
 
     def place(self, plan, seat_idx, players, setup, seed):
         with self.lock:
@@ -483,11 +497,16 @@ class Conn:
                 self.events.put((ev, data))
         return ev, data
 
+    def game_of(self, args):
+        """The game a guarded call works on, for the log."""
+        return None
+
     def guarded(self, fn, *args):
         try:
             return fn(*args)
         except Exception:  # noqa: BLE001 - one bad turn must not stop the client
-            self.log.exception("%s failed", fn.__name__)
+            game = self.game_of(args)
+            self.log.exception("%s failed%s", fn.__name__, f" ({game})" if game else "")
 
     def take_update(self, ev, data):
         """Apply a state update without starting a turn. True if it was one."""
@@ -510,47 +529,68 @@ class Conn:
             return bool(new)
         return (new.get("logSeq") or 0) >= (old.get("logSeq") or 0)
 
-    def play_turn(self, state, me, send, latest):
-        """Decide and send actions until the turn is ended. `send(type, params)` raises on a
-        rejected action; `latest()` returns the newest server state."""
+    def play_turn(self, state, me, key, send, latest):
+        """Decide and send actions in game `key` until the turn is ended. `send(type, params)`
+        raises on a rejected action; `latest()` returns the newest server state. False if the
+        server refused to end the turn: the caller has to try again."""
         rejected, sent, tags = 0, 0, []
         for _ in range(80):
-            tag, actions = self.brain.next_actions(state, me)
+            tag, actions = self.brain.next_actions(state, me, key)
             tags.append(tag)
-            ended = False
+            ended = refused = False
+            # "end" and the forced end after MAX_TURN_STEPS both drop the turn context
+            ending = any(typ == "endTurn" for typ, _ in actions)
             for typ, params in actions:
                 try:
                     send(typ, params)
                     sent += 1
                 except RuntimeError as e:
                     rejected += 1
+                    refused = True
                     cur = latest() or state
                     if os.environ.get("HOCHCIV_KI_DUMP"):
                         Path(os.environ["HOCHCIV_KI_DUMP"]).write_text(json.dumps(
                             {"state": cur, "decided_on": state, "action": [typ, params], "me": me, "error": str(e)}))
                     city = next((c for c in cur.get("cities", []) if c.get("id") == params.get("cityId")), None)
-                    self.log.warning("rejected %s %s (%s): %s [logSeq %s, cur %s, me %s, round %s, cities %s, city %s]",
-                                     typ, params, tag, e, cur.get("logSeq"), cur.get("cur"), me, cur.get("round"),
+                    self.log.warning("%s: rejected %s %s (%s): %s [logSeq %s, cur %s, me %s, round %s, cities %s, city %s]",
+                                     key, typ, params, tag, e, cur.get("logSeq"), cur.get("cur"), me, cur.get("round"),
                                      len(cur.get("cities", [])), city and {k: city.get(k) for k in ("grown", "freeUsed", "born", "pop", "owner")})
                     break
                 ended = typ == "endTurn"
             if ended:
-                self.log.info("round %s, %d actions: %s", state.get("round"), sent, " ".join(tags))
-                return
+                self.log.info("%s: round %s, %d actions: %s", key, state.get("round"), sent, " ".join(tags))
+                return True
+            if refused and ending:       # "end" can't be excluded: deciding again would repeat it
+                return self.force_end(latest() or state, me, key, send)
+            if refused:
+                self.brain.refuse(key, tag)
             if rejected >= 5:
-                self.log.warning("too many rejected actions, ending the turn")
-                send("endTurn", {})
-                return
+                self.log.warning("%s: too many rejected actions, ending the turn", key)
+                return self.force_end(latest() or state, me, key, send)
             state = latest() or state
             if state.get("over") or state["cur"] != me:
-                return
-        send("endTurn", {})
+                return True
+        return self.force_end(state, me, key, send)
+
+    def force_end(self, state, me, key, send):
+        """End the turn the regular way (a bare endTurn is refused while an army stands in a
+        city). False if the server still refuses."""
+        if state.get("over") or state["cur"] != me:
+            return True
+        for typ, params in self.brain.end_actions(state, me, key):
+            try:
+                send(typ, params)
+            except RuntimeError as e:
+                self.log.warning("%s: turn not ended, %s %s refused: %s", key, typ, params, e)
+                return False
+        return True
 
 
 class LiveGame(Conn):
     """One live game: joined from the public list, hosted by the bot, or from matchmaking."""
 
     DONE = ("over", "left", "failed")
+    RETRY = 15                   # seconds until a turn the server didn't let us end is tried again
 
     def __init__(self, mgr, lobby=None, host_cfg=None, match=None, picked=False):
         """host_cfg: a setup from the settings (its id ties the game to the setup)."""
@@ -567,6 +607,7 @@ class LiveGame(Conn):
         self.last_start_try = self.last_ping = 0.0
         self.connected = False       # the first connect event is the initial connection
         self.rebinds = 0             # failed seat bindings after reconnects in a row
+        self.retry_at = 0.0          # when to try the turn again (0 = no need)
         self.done = threading.Event()
         self.thread = threading.Thread(target=self.run, daemon=True, name=f"live-{self.id}")
 
@@ -608,6 +649,9 @@ class LiveGame(Conn):
                     pass
                 if self.kind == "host" and self.phase == "lobby":
                     self.guarded(self.host_tick)
+                # the server's 15 s rebroadcast stops 30 s after the last accepted action
+                if self.retry_at and time.time() >= self.retry_at:
+                    self.guarded(self.live_turn)
         except Exception as e:  # noqa: BLE001
             self.log.exception("live game failed")
             self.phase, self.note = "failed", str(e)
@@ -762,7 +806,11 @@ class LiveGame(Conn):
             self.call("draft:pick", {"id": pick})
             self.log.info("drafted %s", pick)
 
+    def game_of(self, args):
+        return (self.g or {}).get("sessionId")
+
     def live_turn(self):
+        self.retry_at = 0.0
         g = self.g
         S, me = g["state"], g.get("yourIndex", -1)
         if S.get("over") or me is None or me < 0 or S["cur"] != me:
@@ -775,7 +823,8 @@ class LiveGame(Conn):
             before = fingerprint(self.g["state"])
             self.call("action", {"type": typ, "params": params})
             self.wait_event("state:update", changed_from=before)
-        self.play_turn(S, me, send, lambda: self.g and self.g["state"])
+        if not self.play_turn(S, me, g["sessionId"], send, lambda: self.g and self.g["state"]):
+            self.retry_at = time.time() + self.RETRY
 
     def take_update(self, ev, data):
         if ev == "state:update" and self.g:
@@ -802,13 +851,16 @@ class LiveGame(Conn):
 
 class Rundenspiele(Conn):
     """All Rundenspiele on one socket: plays every turn that is due, and joins or hosts new
-    games as the mode says."""
+    games as the mode says. The server keeps a socket in the room of the game it opened last
+    only, so a game gets its updates only while it is the open one; updates of another game
+    can still be on their way when a game is opened."""
 
     def __init__(self, mgr):
         super().__init__(mgr, "rundenspiele")
         self.mine, self.open = [], []    # from the last GET /api/async
-        self.async_open = None           # id of the opened Rundenspiel
-        self.view = None                 # its newest view
+        self.opened = None               # id of the Rundenspiel opened last on this socket
+        self.current = None              # id of the Rundenspiel played now
+        self.views = {}                  # id -> newest view
         self.refused = {}                # id -> why the server refused us
         self.last_poll = 0.0
         self.host_retry = 0.0            # no new hosting attempt before this time
@@ -839,12 +891,16 @@ class Rundenspiele(Conn):
             self.guarded(self.reconnect)
         elif ev == "connect":
             # a new socket has no game opened: the poll opens the due ones again
-            self.async_open = None
+            self.opened = None
+            self.views = {}
             self.guarded(self.poll)
         elif ev == "async:update" and data:
             self.accept(data)
-            self.drain()
-            self.guarded(self.turn, self.view)
+            gid = data.get("id")
+            if gid == self.opened:
+                self.guarded(self.turn, gid)
+            elif gid:                    # not in its room: no updates would follow the actions
+                self.guarded(self.open_game, gid)
 
     def fit(self, s):
         """(why, hard) for the open Rundenspiel `s`: hard = it can't be joined or played at
@@ -886,6 +942,8 @@ class Rundenspiele(Conn):
                     created = True
             if created:
                 self.mine = self.acc.get("/api/async").json().get("mine", self.mine)
+        ids = {s.get("id") for s in self.mine}
+        self.views = {k: v for k, v in self.views.items() if k in ids}
         due = [s for s in self.mine if s.get("yourTurn")]
         if due:
             self.log.info("due: %s", ", ".join(f"{s.get('joinCode')} ({s.get('status')}, round {s.get('round')})" for s in due))
@@ -932,29 +990,40 @@ class Rundenspiele(Conn):
         self.log.info("hosting Rundenspiel %s (code %s)", body.get("id"), body.get("joinCode"))
         return True
 
+    def game_of(self, args):
+        return args[0] if args else None
+
     def open_game(self, gid):
         res = self.call("async:open", {"id": gid})
-        self.async_open = gid
+        self.opened = gid
         self.accept(res["view"])
-        self.turn(self.view)
+        self.turn(gid)
 
     def accept(self, view):
-        """Keep the newest view of the opened game. Views without a state (setup, placement)
-        are always newer than none; a state never goes back (logSeq)."""
-        old = self.view if (self.view or {}).get("id") == view.get("id") else None
-        if not old or not view.get("state") or self.newer(view["state"], old.get("state")):
-            self.view = view
+        """Keep the newest view per game. Views without a state (setup, placement) follow each
+        other in order; a state never goes back (logSeq) and is never replaced by no state."""
+        old = (self.views.get(view.get("id")) or {}).get("state")
+        if not old or self.newer(view.get("state"), old):
+            self.views[view.get("id")] = view
 
     def take_update(self, ev, data):
-        if ev == "async:update" and data and self.async_open == data.get("id"):
+        if ev == "async:update" and data and self.current == data.get("id"):
             self.accept(data)
             return True
         return False
 
-    def turn(self, view):
-        gid = (view or {}).get("id")
-        if not gid:
-            return
+    def turn(self, gid):
+        """Play game `gid` on its newest view; updates of other games wait in the stash."""
+        self.current = gid
+        try:
+            self.stash = [e for e in self.stash if not self.take_update(*e)]
+            self.drain()
+            self.act(gid)
+        finally:
+            self.current = None
+
+    def act(self, gid):
+        view = self.views.get(gid) or {}
         if view.get("status") == "placement" and view.get("placement") and not view["placement"].get("placed"):
             pl = view["placement"]
             o, cell = self.brain.place(pl["plan"], view["mySlot"], pl["players"], pl.get("setup"), 1)
@@ -970,14 +1039,13 @@ class Rundenspiele(Conn):
         S, me = view.get("state"), view.get("myIndex", -1)
         if view.get("status") != "playing" or not S or S.get("over") or me < 0 or S["cur"] != me or view.get("hold"):
             return
-        self.view = view
 
         def send(typ, params):
             # Rundenspiele broadcast the new view before the ack: it is already queued
             self.call("async:action", {"id": gid, "type": typ, "params": params})
             self.drain()
-        self.play_turn(S, me, send, lambda: (self.view or {}).get("state"))
-        self.log.info("%s: turn played (round %s)", gid, S.get("round"))
+        if self.play_turn(S, me, gid, send, lambda: (self.views.get(gid) or {}).get("state")):
+            self.log.info("%s: turn played (round %s)", gid, S.get("round"))
 
 
 class Matchmaker(Conn):

@@ -369,21 +369,31 @@ function recording(g, fn) {
   try { const r = fn(); return Object.assign(r, { actions: rec.list }); } finally { rec.S = null; rec.list = null; }
 }
 
-/* The server's state for the agent at state index `pi`. Old turn context is kept while the
-   same turn goes on (failed candidates, committed armies). */
+/* The server's state for the agent at state index `pi` in online game `key`. Old turn context
+   is kept while the same turn of the same game goes on (failed candidates, committed armies);
+   the client loads all its games into one gid. */
 function load(a) {
   const S = a.state;
   const pi = a.pi;
   S.players[pi].kiLevel = a.kiLevel || 'schwer';
   const gid = a.gid ?? (games.size ? Math.max(...games.keys()) + 1 : 1);
   const old = games.get(gid);
-  const g = { S, agents: new Set([pi]), turn: null, online: true };
-  if (old && old.turn && old.turn.pi === S.cur && old.turn.round === S.round) {
+  const g = { S, key: a.key, agents: new Set([pi]), turn: null, online: true };
+  if (old && old.key === a.key && old.turn && old.turn.pi === S.cur && old.turn.round === S.round) {
     g.turn = old.turn;
     g.turn.K = E.kiContext(S, S.cur);   // armies and resources changed
   }
   games.set(gid, g);
   return Object.assign({ gid }, status(g));
+}
+
+/* The server refused candidate `tag`: not offered again this turn. The turn context is gone
+   if another game was loaded since, or if "end" ran. */
+function refuse(a) {
+  const g = game(a);
+  if (g.key !== a.key || !g.turn) return { refused: false };
+  g.turn.failed.add(a.tag);
+  return { refused: true };
 }
 
 /* A copy of game `gid` for the search (DESIGN_SEARCH.md), as a new game. Only the player on
@@ -478,6 +488,7 @@ function serverAction(g, type, params) {
 const handlers = {
   server_action: a => { const g = game(a); return Object.assign({ err: serverAction(g, a.type, a.params || {}) || null }, status(g)); },
   load: a => load(a),
+  refuse: a => refuse(a),
   place: a => place(a),
   // online step: like step, but returns the server actions instead of continuing the game
   step_online: a => {
