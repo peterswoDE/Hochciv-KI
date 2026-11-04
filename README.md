@@ -150,6 +150,10 @@ rem 3. PPO self-play (resumable with --resume)
 .venv\Scripts\python -m hochciv_ki.train_ppo --out checkpoints\ppo --resume --mix all
 ```
 
+`--continuous` keeps every worker playing: an iteration takes the next `--games` finished games,
+long games carry over, and games go on during the update (about 1.4× faster than waiting for
+the slowest game of every batch).
+
 `data\` and `checkpoints\` are not in git.
 
 ## Playing online
