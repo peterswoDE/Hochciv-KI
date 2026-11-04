@@ -143,7 +143,7 @@ function genCustomMap(seed, n, marathon = false) {
   throw new Error('no custom map for ' + n + ' players');
 }
 
-/* map: 'plaettchen' (tile map with placement, also the lobby's "random"), 'original', 'gross',
+/* map: 'plaettchen' (tile map with placement, also the lobby's "random"), 'original',
    'marathon' (the standard marathon map, 4 empires), 'customgen' / 'customgen-marathon' (a
    random custom map, genCustomMap, the second one with the marathon rules), or a custom map
    object as stored by the map editor ({ name, rows, spawns, marathon?, ... }). Agent seats
@@ -153,7 +153,7 @@ function reset(a) {
   const seed = (a.seed ?? Math.floor(Math.random() * 2 ** 31)) | 0;
   const map = a.map === 'customgen' || a.map === 'customgen-marathon'
     ? genCustomMap(seed, a.players.length, a.map === 'customgen-marathon') : (a.map || 'plaettchen');
-  const fixed = map === 'original' || map === 'gross';
+  const fixed = map === 'original';
   const players = makePlayers(a.players, seed, fixed);
   const cfg = {
     seed, players, duel: players.length === 2, events: !!a.events,
@@ -180,7 +180,7 @@ function reset(a) {
     });
     Object.assign(cfg, { map: E.tileMap(plan), avail: setup.avail, wpool: setup.wpool });
   } else if (fixed) {
-    cfg.map = JSON.parse(JSON.stringify(konst(map === 'gross' ? 'MAP_GROSS' : 'DEFAULT_MAP')));
+    cfg.map = JSON.parse(JSON.stringify(konst('DEFAULT_MAP')));
   } else {
     const r = E.checkCustomMap(map);
     if (r.error) throw new Error('custom map: ' + r.error);

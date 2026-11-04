@@ -14,7 +14,7 @@ SETUPS = [
     ("1v1 tile map vs KI", "plaettchen", [{"kind": "agent"}, {"kind": "ki", "kiLevel": "leicht"}]),
     ("1v1 original map vs bot", "original", [{"kind": "agent"}, {"kind": "bot"}]),
     ("4p tile map", "plaettchen", [{"kind": "agent"}, {"kind": "ki", "kiLevel": "leicht"}, {"kind": "bot"}, {"kind": "bot"}]),
-    ("3p gross map", "gross", [{"kind": "agent"}, {"kind": "bot"}, {"kind": "bot"}]),
+    ("3p custom map", "customgen", [{"kind": "agent"}, {"kind": "bot"}, {"kind": "bot"}]),
 ]
 
 

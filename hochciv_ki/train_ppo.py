@@ -32,9 +32,9 @@ from .infer import InferenceServer, ServerAgent
 from .model import collate, load_net, save_net
 from .pool import BridgePool
 
-MAPS = {"2": ["plaettchen", "plaettchen", "plaettchen", "original", "gross", "customgen"],
-        "3": ["plaettchen", "plaettchen", "gross", "customgen"],
-        "4": ["plaettchen", "plaettchen", "original", "gross", "customgen"]}
+MAPS = {"2": ["plaettchen", "plaettchen", "plaettchen", "original", "customgen"],
+        "3": ["plaettchen", "plaettchen", "customgen"],
+        "4": ["plaettchen", "plaettchen", "original", "customgen"]}
 # v2: also marathon maps, and 5–8 empires (tile and custom maps allow up to 8)
 MAPS_V2 = {"2": MAPS["2"] + ["customgen-marathon"],
            "3": MAPS["3"] + ["customgen-marathon"],
