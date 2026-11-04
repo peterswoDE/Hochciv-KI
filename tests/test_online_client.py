@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 from hochciv_ki.bridge import Bridge
 from hochciv_ki.env import TeacherAgent, decode_obs
-from hochciv_ki.online.client import Brain, Conn, LiveGame, Rundenspiele
+from hochciv_ki.online.client import Brain, Conn, LiveGame, Rundenspiele, engine_dir_of
 
 ME = 0
 
@@ -27,6 +27,9 @@ class FakeBrain:
 
     def __init__(self):
         self.seen = []
+
+    def on(self, engine):
+        return self
 
     def next_actions(self, state, pi, key):
         self.seen.append((key, state["game"], state["logSeq"]))
@@ -296,6 +299,49 @@ def test_live_game_tries_a_refused_end_again():
     g.g["state"]["cur"] = ME + 1                 # e.g. the turn timer ended the turn
     g.live_turn()
     assert not g.retry_at
+
+
+def test_old_engines_play_their_own_rules():
+    brain = Brain("teacher", device="cpu")
+    try:
+        for version in ("v98", "v96"):       # v93, v83: no bot games left, older than the bridge
+            old = brain.on(version)
+            assert old is brain.on(version) and old.lock is brain.lock
+            assert old.bridge.info()["version"] == version
+            with Bridge(engine_dir_of(version)) as server:
+                st = server.reset([{"kind": "agent"}, {"kind": "ki"}], seed=7, map="original")
+                gid, me = st["gid"], st["agents"][0]
+                sent = []
+
+                def send(typ, params):
+                    sent.append(typ)
+                    err = server.call("server_action", gid=gid, type=typ, params=params)["err"]
+                    assert not err, (version, typ, err)
+                assert conn(brain).play_turn(server.state(gid), me, "A", send, lambda: server.state(gid), old)
+                assert sent[-1] == "endTurn", sent
+    finally:
+        brain.close()
+
+
+def test_rundenspiel_is_played_on_its_engine():
+    brain, server = FakeBrain(), FakeServer(dict(view("A"), engine="v98"))
+    asked = []
+    brain.on = lambda engine: asked.append(engine) or brain
+    FakeRundenspiele(server, brain).open_game("A")
+    assert asked[0] == "v98", asked
+
+
+def test_unknown_engine_is_refused():
+    brain = Brain("teacher", device="cpu")
+    try:
+        try:
+            brain.on("v1")
+        except RuntimeError as e:
+            assert "v1" in str(e)
+        else:
+            raise AssertionError("played a game without its engine")
+    finally:
+        brain.close()
 
 
 def test_logs_name_the_game():

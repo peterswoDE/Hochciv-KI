@@ -26,7 +26,8 @@ together:
   * games picked in the panel's game list are joined whatever the filters say
 The bot always plays every game it is in: every mode (wonders, events, marathon with its
 ability draft) with up to 8 empires; the join filters choose which of them it joins on its own.
-It never plays Rundenspiele of an older engine.
+It joins no new Rundenspiele of an older engine, but finishes those it is in, each on the rules
+it was started on (Brain.on).
 
 Every move is computed by the local bridge worker on the server's state: the candidate the
 agent picks is recorded as engine calls and sent as `action { type, params }`. Each live game
@@ -37,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import copy
 import json
 import logging
 import os
@@ -281,6 +283,17 @@ class Tagged(logging.LoggerAdapter):
 
 
 SEARCH_BUDGET = 15.0      # seconds of search per turn (search: agents)
+KI_ROOT = Path(__file__).resolve().parents[2]
+
+
+def engine_dir_of(version):
+    """The local copy of engine `version`: the folders the server keeps it in, or a frozen copy."""
+    server = KI_ROOT.parent / "multiplayer-server"
+    for d in (server / f"HochCiv-{version}" / "js", server / "HochCiv" / "js", KI_ROOT / "runs" / "engines" / version):
+        data = d / "data.js"
+        if data.exists() and f"APP_VERSION = '{version}'" in data.read_text(encoding="utf-8"):
+            return d
+    raise RuntimeError(f"no local copy of engine {version}")
 
 
 class Brain:
@@ -301,6 +314,27 @@ class Brain:
             self.agent.budget = SEARCH_BUDGET
         self.spec = agent_spec
         self.lock = threading.Lock()
+        self.others = {}                 # engine version -> Brain on that engine's bridge
+
+    def on(self, engine):
+        """The Brain for a Rundenspiel of engine version `engine`: same agent, same lock, the
+        rules that game was started on. Raises if there is no local copy: wrong rules would
+        only produce refused or bad moves."""
+        if engine in (None, "current", self.version):
+            return self
+        with self.lock:
+            if engine not in self.others:
+                brain = copy.copy(self)
+                brain.bridge = Bridge(engine_dir_of(engine))
+                brain.version = engine
+                self.others[engine] = brain
+                log.info("loaded engine %s for its running games", engine)
+            return self.others[engine]
+
+    def close(self):
+        for brain in self.others.values():
+            brain.bridge.close()
+        self.bridge.close()
 
     def next_actions(self, state, pi, key):
         """Server actions for the next decision of seat `pi` in game `key` (ends with endTurn
@@ -529,13 +563,15 @@ class Conn:
             return bool(new)
         return (new.get("logSeq") or 0) >= (old.get("logSeq") or 0)
 
-    def play_turn(self, state, me, key, send, latest):
+    def play_turn(self, state, me, key, send, latest, brain=None):
         """Decide and send actions in game `key` until the turn is ended. `send(type, params)`
         raises on a rejected action; `latest()` returns the newest server state. False if the
-        server refused to end the turn: the caller has to try again."""
+        server refused to end the turn: the caller has to try again. `brain`: the one of the
+        game's engine, if it has its own."""
+        brain = brain or self.brain
         rejected, sent, tags = 0, 0, []
         for _ in range(80):
-            tag, actions = self.brain.next_actions(state, me, key)
+            tag, actions = brain.next_actions(state, me, key)
             tags.append(tag)
             ended = refused = False
             # "end" and the forced end after MAX_TURN_STEPS both drop the turn context
@@ -561,23 +597,23 @@ class Conn:
                 self.log.info("%s: round %s, %d actions: %s", key, state.get("round"), sent, " ".join(tags))
                 return True
             if refused and ending:       # "end" can't be excluded: deciding again would repeat it
-                return self.force_end(latest() or state, me, key, send)
+                return self.force_end(latest() or state, me, key, send, brain)
             if refused:
-                self.brain.refuse(key, tag)
+                brain.refuse(key, tag)
             if rejected >= 5:
                 self.log.warning("%s: too many rejected actions, ending the turn", key)
-                return self.force_end(latest() or state, me, key, send)
+                return self.force_end(latest() or state, me, key, send, brain)
             state = latest() or state
             if state.get("over") or state["cur"] != me:
                 return True
-        return self.force_end(state, me, key, send)
+        return self.force_end(state, me, key, send, brain)
 
-    def force_end(self, state, me, key, send):
+    def force_end(self, state, me, key, send, brain=None):
         """End the turn the regular way (a bare endTurn is refused while an army stands in a
         city). False if the server still refuses."""
         if state.get("over") or state["cur"] != me:
             return True
-        for typ, params in self.brain.end_actions(state, me, key):
+        for typ, params in (brain or self.brain).end_actions(state, me, key):
             try:
                 send(typ, params)
             except RuntimeError as e:
@@ -1024,14 +1060,15 @@ class Rundenspiele(Conn):
 
     def act(self, gid):
         view = self.views.get(gid) or {}
+        brain = self.brain.on(view.get("engine"))
         if view.get("status") == "placement" and view.get("placement") and not view["placement"].get("placed"):
             pl = view["placement"]
-            o, cell = self.brain.place(pl["plan"], view["mySlot"], pl["players"], pl.get("setup"), 1)
+            o, cell = brain.place(pl["plan"], view["mySlot"], pl["players"], pl.get("setup"), 1)
             self.call("async:place", {"id": gid, "o": o, "cell": cell})
             self.log.info("%s: placed start tile", gid)
             return
         if view.get("status") == "draft" and view.get("draft"):
-            pick = self.brain.draft_pick(view["draft"], view["mySlot"])
+            pick = brain.draft_pick(view["draft"], view["mySlot"])
             if pick:
                 self.call("async:draft", {"id": gid, "abilityId": pick})
                 self.log.info("%s: drafted %s", gid, pick)
@@ -1044,7 +1081,7 @@ class Rundenspiele(Conn):
             # Rundenspiele broadcast the new view before the ack: it is already queued
             self.call("async:action", {"id": gid, "type": typ, "params": params})
             self.drain()
-        if self.play_turn(S, me, gid, send, lambda: (self.views.get(gid) or {}).get("state")):
+        if self.play_turn(S, me, gid, send, lambda: (self.views.get(gid) or {}).get("state"), brain):
             self.log.info("%s: turn played (round %s)", gid, S.get("round"))
 
 
