@@ -143,7 +143,7 @@ function genCustomMap(seed, n, marathon = false) {
   throw new Error('no custom map for ' + n + ' players');
 }
 
-/* map: 'plaettchen' (tile map with placement, also the lobby's "random"), 'original',
+/* map: 'plaettchen' (tile map with placement, also the lobby's "random"), 'plaettchen-hex' (hexagonal tiles), 'original',
    'marathon' (the standard marathon map, 4 empires), 'customgen' / 'customgen-marathon' (a
    random custom map, genCustomMap, the second one with the marathon rules), or a custom map
    object as stored by the map editor ({ name, rows, spawns, marathon?, ... }). Agent seats
@@ -169,8 +169,8 @@ function reset(a) {
     }
     cfg.marathon = true;
     draftMarathon(cfg, seed);
-  } else if (map === 'plaettchen') {
-    const plan = E.tilePlan(players.map(p => p.civ), seed);
+  } else if (map === 'plaettchen' || map === 'plaettchen-hex') {
+    const plan = E.tilePlan(players.map(p => p.civ), seed, { hex: map === 'plaettchen-hex' });
     if (!plan) throw new Error('no tile map for ' + players.length + ' players');
     const setup = E.rollSetup(Object.assign({}, cfg));
     const rnd = E.mapRng(seed + 12345);

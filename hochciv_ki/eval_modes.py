@@ -35,6 +35,14 @@ SUITES = {
         (2, "plaettchen", {}, 60),
         (4, "customgen", {}, 15),
     ],
+    # hex tiles (v100) on their own, so that v2 stays comparable with earlier runs
+    "hex": [
+        (2, "plaettchen-hex", WO, 40),
+        (3, "plaettchen-hex", HE, 20),
+        (4, "plaettchen-hex", {}, 15),
+        (6, "plaettchen-hex", WO, 10),
+        (8, "plaettchen-hex", {}, 6),
+    ],
 }
 
 

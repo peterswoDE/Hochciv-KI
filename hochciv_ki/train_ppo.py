@@ -35,11 +35,12 @@ from .pool import BridgePool
 MAPS = {"2": ["plaettchen", "plaettchen", "plaettchen", "original", "customgen"],
         "3": ["plaettchen", "plaettchen", "customgen"],
         "4": ["plaettchen", "plaettchen", "original", "customgen"]}
-# v2: also marathon maps, and 5–8 empires (tile and custom maps allow up to 8)
-MAPS_V2 = {"2": MAPS["2"] + ["customgen-marathon"],
-           "3": MAPS["3"] + ["customgen-marathon"],
-           "4": MAPS["4"] + ["marathon", "marathon", "customgen-marathon"],
-           **{str(n): ["plaettchen", "plaettchen", "customgen", "customgen", "customgen-marathon"] for n in range(5, 9)}}
+# v2: also marathon maps, and 5–8 empires (tile and custom maps allow up to 8); hex tiles since v100
+MAPS_V2 = {"2": MAPS["2"] + ["customgen-marathon", "plaettchen-hex"],
+           "3": MAPS["3"] + ["customgen-marathon", "plaettchen-hex"],
+           "4": MAPS["4"] + ["marathon", "marathon", "customgen-marathon", "plaettchen-hex"],
+           **{str(n): ["plaettchen", "plaettchen", "customgen", "customgen", "customgen-marathon", "plaettchen-hex"]
+              for n in range(5, 9)}}
 
 # (weight, seats) – L: learner (records), S: snapshot, ki:*, bot:*
 MIXES = {
