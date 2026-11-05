@@ -60,9 +60,9 @@ log = logging.getLogger("hochciv-ki")
 GREETING = "Hallo! Ich bin HochCiv-KI, ein neuronales Netz (Bot). Viel Spaß!"
 MAX_PLAYERS = 8
 # map keys of live lobbies and Rundenspiele -> the map groups in the settings
-MAP_GROUPS = {"0": "original", "1": "original", "original": "original", "gross": "gross",
+MAP_GROUPS = {"0": "original", "1": "original", "original": "original",
               "random": "tiles", "plaettchen": "tiles", "eigene": "custom", "marathon": "marathon"}
-HOST_MAPS = {"live": ("random", "0", "gross", "marathon"), "async": ("plaettchen", "0", "gross", "marathon")}
+HOST_MAPS = {"live": ("random", "0", "marathon"), "async": ("plaettchen", "0", "marathon")}
 EVENT_MODES = ("off", "easy", "hard")
 TURN_TIMES = (0, 60, 120, 180, 300, 600)
 KI_LEVELS = ("leicht", "mittel", "schwer")
@@ -77,7 +77,7 @@ DEFAULTS = {
         "on": False,
         "live": True, "max_live": 1,         # live games joined at once
         "async": True, "max_async": 5,       # Rundenspiele joined at once
-        "maps": ["tiles", "original", "gross", "custom", "marathon"],
+        "maps": ["tiles", "original", "custom", "marathon"],
         "min_empires": 2, "max_empires": MAX_PLAYERS,
         "ki": True,                          # games with KI seats
         "ranked": "any",                     # any | ranked | unranked
@@ -181,7 +181,7 @@ def host_empires(map_key):
     """Empires a hosted game may have on this map (as mapLimits in the engine)."""
     if map_key == "marathon":
         return 4, 4
-    if map_key in ("0", "gross"):
+    if map_key == "0":
         return 2, 4
     return 2, MAX_PLAYERS
 

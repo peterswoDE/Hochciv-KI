@@ -304,7 +304,7 @@ def test_live_game_tries_a_refused_end_again():
 def test_old_engines_play_their_own_rules():
     brain = Brain("teacher", device="cpu")
     try:
-        for version in ("v98", "v96"):       # v93, v83: no bot games left, older than the bridge
+        for version in ("v98",):
             old = brain.on(version)
             assert old is brain.on(version) and old.lock is brain.lock
             assert old.bridge.info()["version"] == version

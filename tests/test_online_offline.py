@@ -21,7 +21,7 @@ def run(games=6, agent=None):
             n = [2, 2, 3, 4][g % 4]
             players = [{"kind": "agent"}] + [{"kind": "ki", "kiLevel": "schwer"}] * (n - 1)
             random.Random(g).shuffle(players)
-            st = server.reset(players, seed=500 + g, map=["plaettchen", "original", "gross"][g % 3])
+            st = server.reset(players, seed=500 + g, map=["plaettchen", "original", "customgen"][g % 3])
             gid, me = st["gid"], st["agents"][0]
             sent = rejected = 0
             while not st["over"]:
