@@ -176,8 +176,8 @@ def main():
     gap = [float((e["target"] * (np.log(e["target"] + 1e-12) - np.log(e["p"] + 1e-12))).sum()) for e in tg]
     moved = sum(int(e["target"].argmax()) != int(e["p"].argmax()) for e in tg)
     print(f"{args.games} games: plain {times[0.0]:.0f} s, frac {args.frac} k {args.k}: {times[args.frac]:.0f} s "
-          f"({times[args.frac] / times[0.0]:.2f}×)")
-    print(f"{len(ex)} decisions, {len(tg)} searched; KL(target ‖ policy) mean {np.mean(gap):.4f}, "
+          f"({times[args.frac] / times[0.0]:.2f}x)")
+    print(f"{len(ex)} decisions, {len(tg)} searched; KL(target || policy) mean {np.mean(gap):.4f}, "
           f"median {np.median(gap):.4f}; best move changed in {100 * moved / max(1, len(tg)):.1f} %")
 
 
