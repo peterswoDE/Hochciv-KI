@@ -28,6 +28,7 @@ import torch.nn.functional as F
 
 from .env import play_game
 from .eval import run_eval
+from .expert import ExpertAgent, search_phase
 from .infer import InferenceServer, ServerAgent
 from .model import collate, load_net, save_net
 from .pool import BridgePool
@@ -107,7 +108,7 @@ def phi(prog, me, rnd, n0, slope=1.0):
 
 
 def gae(traj, z, lam, shape=0.0, slope=1.0):
-    """traj: list of (sample, a, logp, v, teacher, prog, pi, round). Reward z at the end, gamma 1.
+    """traj: list of (sample, a, logp, v, teacher, prog, pi, round, …). Reward z at the end, gamma 1.
     shape > 0 adds c * (Φ(s') − Φ(s)) to the advantages, Φ(end) = 0; the value targets stay
     on the unshaped reward (the value head is the chance to win)."""
     n = len(traj)
@@ -224,6 +225,11 @@ def main():
     ap.add_argument("--snap-every", type=int, default=10)
     ap.add_argument("--workers", type=int, default=None)
     ap.add_argument("--continuous", action="store_true", help="keep every worker playing (class Collector)")
+    ap.add_argument("--search-frac", type=float, default=0.0, help="share of the learner's decisions searched (expert.py)")
+    ap.add_argument("--search-k", type=int, default=3)
+    ap.add_argument("--search-tau", type=float, default=0.03)
+    ap.add_argument("--search-epochs", type=int, default=1)
+    ap.add_argument("--search-kl", type=float, default=0.05, help="the search phase stops at this KL from the played policy")
     args = ap.parse_args()
 
     device = "cuda"
@@ -249,6 +255,7 @@ def main():
     rng = random.Random(12345 + st["iter"])
 
     job_no = itertools.count(st["iter"] * 1000)
+    search = {"frac": args.search_frac, "k": args.search_k, "tau": args.search_tau} if args.search_frac else None
 
     def make_job():
         seats = rng.choices([m[1] for m in mix], weights=[m[0] for m in mix])[0]
@@ -260,7 +267,7 @@ def main():
         print(f"engine {pool.version}, {pool.workers} workers, mix {args.mix}, start at iter {st['iter']}", flush=True)
 
         def play(b, j):
-            return collect(b, pool.dims, j, learner_srv, snap_srv)
+            return collect(b, pool.dims, j, learner_srv, snap_srv, search)
 
         collector = Collector(pool, make_job, play) if args.continuous else None
         if collector:
@@ -273,14 +280,16 @@ def main():
             else:
                 jobs = [make_job() for _ in range(args.games)]
                 results = pool.map(play, jobs)
-            batch, wins, games_vs_ki, steps, shaped = [], 0.0, 0, 0, []
+            batch, wins, games_vs_ki, steps, shaped, searched = [], 0.0, 0, 0, [], []
             for recs, info in results:
                 for rec, z in recs:
                     adv, ret = gae(rec, z, args.lam, args.shape, args.shape_slope)
                     if args.shape:
                         shaped.append(float((adv - gae(rec, z, args.lam)[0]).std()))
-                    for k, (sample, a, logp, v, teacher, *_) in enumerate(rec):
+                    for k, (sample, a, logp, v, teacher, *rest) in enumerate(rec):
                         batch.append((sample, a, logp, adv[k], ret[k], teacher))
+                        if rest[-2] is not None:
+                            searched.append((sample, rest[-2], rest[-1]))
                 if info["vs_ki"]:
                     games_vs_ki += 1
                     wins += info["score"]
@@ -288,6 +297,8 @@ def main():
             t1 = time.perf_counter()
             imit = args.imit * 0.5 ** (it / args.imit_half)
             stats = ppo.update(batch, args.epochs, args.mb, device, imit)
+            if search:
+                stats.update(search_phase(net, ppo.opt, searched, device, args.mb, args.search_epochs, args.search_kl))
             learner_srv.load_state(net.state_dict())
             t2 = time.perf_counter()
             st["iter"] = it
@@ -370,7 +381,7 @@ class Collector:
         return [self.done.get().result() for _ in range(n)]
 
 
-def collect(bridge, dims, job, learner, snap):
+def collect(bridge, dims, job, learner, snap, search=None):
     rng = random.Random(job["seed"])
     seats = job["seats"][:]
     rng.shuffle(seats)
@@ -378,7 +389,8 @@ def collect(bridge, dims, job, learner, snap):
     agents, learner_slots = {}, set()
     for i, s in enumerate(seats):
         if s == "L":
-            agents[i] = ServerAgent(learner, seed=job["seed"] * 31 + i)
+            seed = job["seed"] * 31 + i
+            agents[i] = ExpertAgent(learner, seed=seed, **search) if search else ServerAgent(learner, seed=seed)
             learner_slots.add(i)
         elif s == "S":
             agents[i] = ServerAgent(snap, seed=job["seed"] * 31 + i)
@@ -389,7 +401,8 @@ def collect(bridge, dims, job, learner, snap):
                    and r.slot_of.get(pi) in learner_slots]
     for pi in learner_pis:
         z = r.score(pi) if r.over else 1.0 / len(players)
-        recs.append(([(e["sample"], a, e["logp"], e["v"], obs.teacher, obs.prog, obs.pi, obs.round)
+        recs.append(([(e["sample"], a, e["logp"], e["v"], obs.teacher, obs.prog, obs.pi, obs.round,
+                       e.get("target"), e.get("p"))
                       for obs, a, e in r.trajectories[pi]], z))
     vs_ki = all(s == "L" or s.startswith("ki") for s in seats) and seats.count("L") == 1
     score = r.score(learner_pis[0]) if (vs_ki and learner_pis) else 0.0

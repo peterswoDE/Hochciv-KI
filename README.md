@@ -73,6 +73,11 @@ and scored with the value head, "end" after the other seats' turns played by KI 
 in `eval`, `eval_modes` and the online client (`--agent search:checkpoints2.pt`, at most 15 s
 of search per turn); about 0.1–0.6 s per decision.
 
+`train_ppo --search-frac 0.25` lets the network learn from that search during training
+(stage 3, `hochciv_ki/expert.py`): a quarter of the learner's decisions get a target from the
+search, trained in a phase after the PPO update. `python -m hochciv_ki.expert` measures what it
+costs and how often it changes the best move.
+
 Baselines (engine v98, tile map, against KI schwer; score = share of wins, fair share 1/n):
 
 | Agent | 2 players | 4 players |

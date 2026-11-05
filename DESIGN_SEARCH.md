@@ -1,6 +1,7 @@
 # Search at decision time – design
 
 Status: stage 1 implemented (2026-11-02, `hochciv_ki/search.py`); first measurement 2026-11-03.
+Stage 3 built 2026-11-05 (`hochciv_ki/expert.py`, `train_ppo.py --search-frac`), not measured yet.
 
 Half v2 suite against KI schwer, same seeds for both (`runs/eval_v2_half.*`,
 `runs/eval_search_v2_half.*`): **search (k = 4) 1.31 against plain v2 1.26** mean relative score.
@@ -103,6 +104,21 @@ The search's choices are better labels than the KI planner's. Training the polic
 (expert iteration, as in AlphaZero) makes the network stronger, which makes the search
 stronger. That needs search during training games, which multiplies the collection time by
 `k` or more – only realistic after the throughput work (see below). Decided after stage 1/2.
+
+Built 2026-11-05 (`hochciv_ki/expert.py`), ahead of stage 2: stage 1 search is enough to start,
+and plain PPO stopped gaining (`ppo6` level with v3 head to head).
+
+- **Only a share of the decisions is searched** (`--search-frac`, 25 %), the top 3 candidates,
+  like playout cap randomization. The learner's seats only; KI seats stay as they are.
+- **Target, not label:** `target(a) ∝ p(a) · exp((Q(a) − v) / τ)`, with `Q = v` for candidates
+  not searched. These keep their prior, and one noisy value cannot force a label.
+- **Moves stay sampled from the policy,** so the game is on-policy and PPO's data stays valid.
+- **Own training phase:** after the PPO update, `search_phase` runs one epoch on the searched
+  decisions, stopped at `--search-kl` from the policy that played (0.05, first run 0.075: where
+  PPO's own brake sits at `--target-kl 0.05`). `PPO.update` is unchanged.
+- **τ = 0.03:** on `ppo6` the best move changes in 9.1 % of the searched decisions (mean
+  KL(target ‖ policy) 0.060, median 0.004); at τ = 0.1 in 4.4 %. Measured beside a running
+  training, so the cost of 0.7× and 4.6× for the same setup says nothing; measure it alone.
 
 ## Code changes (stage 1)
 
