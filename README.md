@@ -135,7 +135,17 @@ Baseline before v2 training: the widened v1 model against KI schwer (seeds 90000
 | 4p, marathon (40) | 0.250 ± 0.136 | 0.250 |
 | 3p, custom marathon map, wonders (30) | 0.500 ± 0.182 | 0.333 |
 
-## v3 (production model since 2026-11-03)
+## v4 (production model since 2026-11-06)
+
+`checkpoints/v4.pt` = `checkpoints/ppo9/best.pt`, iteration 20: first run with search stage 3
+(DESIGN_SEARCH.md), from `ppo8`, `--lr 5e-5 --target-kl 0.05 --search-frac 0.25 --search-k 3
+--search-tau 0.03`, no shaping. Plays without search. Full v2 suite on seeds not used to pick
+it (`--base-seed 290000`, 798 games): against KI schwer 1.536 ± 0.145, head to head against v3
+1.281 ± 0.137 (9 modes better, 2 equal, none worse). Hex suite against KI schwer 1.795.
+Training evals swung between 1.18 and 1.48 over the run, so iteration 20 is a high point, not a
+stable level.
+
+## v3 (production model from 2026-11-03 to 2026-11-06)
 
 `checkpoints/v3.pt` = run B' (`checkpoints/ppo4/best.pt`, iteration 80): PPO from v2 on the v2 mix
 with reward shaping (DESIGN_SHAPING.md), `--lr 5e-5 --target-kl 0.05 --imit 0.03 --shape 1`.
