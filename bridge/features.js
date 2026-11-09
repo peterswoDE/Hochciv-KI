@@ -29,6 +29,8 @@ function makeFeatures(E, konst) {
     worldPop = fn('worldPop'), roadLevel = fn('roadLevel'),
     capitalsTaken = fn('capitalsTaken'), abilitiesOf = fn('abilitiesOf'),
     wonderCost = fn('wonderCost'), hasWonder = fn('hasWonder');
+  const claimsLeft = fn('claimsLeft'), copyWaysOpen = fn('copyWaysOpen'),
+    freeTechsLeft = fn('freeTechsLeft'), freeTechOptions = fn('freeTechOptions'), isAbil = fn('isAbil');
   const empireCount = S => S.players.filter(p => p.kind !== 'barbar').length;   // barbarians come last
   const TECHS = konst('TECHS');
   const TECH_KEYS = Array.isArray(TECHS) ? TECHS.map(t => t.k) : Object.keys(TECHS);
@@ -128,7 +130,11 @@ function makeFeatures(E, konst) {
     'freeArmies', 'backPicks', 'wonders', 'powerOf', 'claim',
     ...CIV_KEYS.map(k => 'civ:' + k), ...ABILS.map(k => 'abil:' + k),
     ...TECH_KEYS.map(k => 'tech:' + k), ...TECH_KEYS.map(k => 'avail:' + k),
-    ...WONDER_KEYS.map(k => 'wonderOwn:' + k), 'wonderCost', 'cultureWin'];
+    ...WONDER_KEYS.map(k => 'wonderOwn:' + k), 'wonderCost', 'cultureWin',
+    // v101-v105 rules: free claims this round (Kolonialismus), copy ways still open this round,
+    // free techs left in the game and whether one can be taken this round (Greece)
+    'claimsLeft', 'copyOpen:internet', 'copyOpen:spionage', 'copyOpen:kundschafterei',
+    'freeTechsLeft', 'freeTechNow'];
   const SEAT_F = SEAT_NAMES.length;
   const GAME_NAMES = ['round', 'players', 'duel', 'marathon', 'wonders', 'events', 'claims', 'worldPop',
     'evEasy', 'nukeBan', 'barbarians', ...EVENT_KEYS.map(k => 'event:' + k),
@@ -173,6 +179,12 @@ function makeFeatures(E, konst) {
     i += NW;
     out[i++] = S.wo ? wonderCost(S, pi) / 40 : 0;
     out[i++] = p.cultureWin != null ? 1 : 0;
+    // engines before v101/v103/v105 don't have these: 0
+    out[i++] = claimsLeft ? claimsLeft(S, pi) / 3 : 0;
+    const open = copyWaysOpen ? copyWaysOpen(S, pi).map(w => w.k) : [];
+    for (const k of ['internet', 'spionage', 'kundschafterei']) out[i++] = open.includes(k) ? 1 : 0;
+    out[i++] = freeTechsLeft && isAbil(p, 'gratistech') ? freeTechsLeft(p) / 2 : 0;
+    out[i++] = freeTechOptions ? (freeTechOptions(S, pi).length ? 1 : 0) : 0;
   }
 
   // ---------------------------------------------------------------- victory progress

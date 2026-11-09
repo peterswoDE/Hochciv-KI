@@ -188,7 +188,7 @@ HOCHCIV_TOKEN=hcbot_...
 regular account that logs in with a password only.)
 
 ```
-.venv\Scripts\python -m hochciv_ki.online.client --config online.env --agent ckpt:checkpoints\v1.pt --open
+.venv\Scripts\python -m hochciv_ki.online.client --config online.env --agent ckpt:checkpoints\v4.pt --open
 ```
 
 The engine is the one the server runs: the client reads `APP_VERSION` from the server's
