@@ -304,7 +304,7 @@ def test_live_game_tries_a_refused_end_again():
 def test_old_engines_play_their_own_rules():
     brain = Brain("teacher", device="cpu")
     try:
-        for version in ("v98",):
+        for version in ("v100", "v98"):
             old = brain.on(version)
             assert old is brain.on(version) and old.lock is brain.lock
             assert old.bridge.info()["version"] == version
@@ -341,6 +341,51 @@ def test_unknown_engine_is_refused():
         else:
             raise AssertionError("played a game without its engine")
     finally:
+        brain.close()
+
+
+def test_claimed_tile_is_sent_to_the_server():
+    """Kolonialismus (v103+): a claim the agent picks goes to the server as claimTile."""
+    with Bridge() as server, Bridge() as client:
+        if not server.call("info")["version"] >= "v103":
+            return
+        st = server.reset([{"kind": "agent"}, {"kind": "ki"}], seed=7, map="plaettchen")
+        me = st["agents"][0]
+        S = server.state(st["gid"])
+        S["players"][me]["techs"]["kolonialismus"] = True
+        server.call("load", gid=50, state=S, pi=me)
+        client.call("load", gid=1, state=S, pi=me, key="A")
+        tags = client.call("candidates", gid=1)["cands"]
+        i = next(i for i, t in enumerate(tags) if t.startswith("col:"))
+        actions = client.call("step_online", gid=1, i=i)["actions"]
+        assert [a[0] for a in actions] == ["claimTile"], actions
+        err = server.call("server_action", gid=50, type="claimTile", params=actions[0][1])["err"]
+        assert not err, err
+
+
+def test_the_server_engine_is_followed():
+    """A deploy of a new engine: new games are played on it, a version without a local copy
+    leaves the current one."""
+    from hochciv_ki.online import client as cl
+    brain = Brain("teacher", device="cpu")
+    mgr = SimpleNamespace(acc=SimpleNamespace(url="x"), brain=brain, last_engine_check=0)
+    real = cl.server_version
+    try:
+        cl.server_version = lambda url: "v98"
+        cl.Manager.check_engine(mgr)
+        assert brain.current == "v98" and brain.on(None).version == "v98"
+        assert conn(brain).brain.on(None) is brain.on("v98")
+        cl.server_version = lambda url: "v1"
+        cl.Manager.check_engine(mgr)
+        assert brain.current == "v98"
+        cl.server_version = lambda url: None
+        cl.Manager.check_engine(mgr)
+        assert brain.current == "v98"
+        cl.server_version = lambda url: brain.version
+        cl.Manager.check_engine(mgr)
+        assert brain.on(None) is brain
+    finally:
+        cl.server_version = real
         brain.close()
 
 

@@ -13,8 +13,8 @@ py -3.13 -m venv .venv
 Node.js must be on the PATH. The rules engine is loaded read-only from
 `..\multiplayer-server\HochCiv\js`; set `HOCHCIV_ENGINE_DIR` to use another copy. That folder
 changes with the branch checked out there, so long runs use a frozen copy (`git archive` into
-`runs\engines\<version>`), and the online bot the engine production runs (for example
-`..\multiplayer-server\HochCiv-v98\js`).
+`runs\engines\<version>`). The online bot needs no setting: it plays on the engine the server
+runs (see *Playing online*).
 
 ## Selftest
 
@@ -190,6 +190,13 @@ regular account that logs in with a password only.)
 ```
 .venv\Scripts\python -m hochciv_ki.online.client --config online.env --agent ckpt:checkpoints\v1.pt --open
 ```
+
+The engine is the one the server runs: the client reads `APP_VERSION` from the server's
+`js/data.js` at the start and every 5 minutes, and plays new games on the local copy of that
+version (`..\multiplayer-server\HochCiv-<version>\js`, `..\multiplayer-server\HochCiv\js` or
+`runs\engines\<version>`). A deploy switches it over by itself; running Rundenspiele keep the
+engine they were started on. If there is no local copy of the new version it stays on the old one
+and logs an error.
 
 It logs in with the token (`POST /api/auth/bot`) and opens a control panel on
 <http://127.0.0.1:8765/> (`--port`, `--open` opens it in the browser, `--no-panel` runs with

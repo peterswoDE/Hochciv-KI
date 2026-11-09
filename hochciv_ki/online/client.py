@@ -26,8 +26,9 @@ together:
   * games picked in the panel's game list are joined whatever the filters say
 The bot always plays every game it is in: every mode (wonders, events, marathon with its
 ability draft) with up to 8 empires; the join filters choose which of them it joins on its own.
-It joins no new Rundenspiele of an older engine, but finishes those it is in, each on the rules
-it was started on (Brain.on).
+It plays on the engine version the server runs (APP_VERSION of its js/data.js, checked again
+every few minutes, so a deploy switches it over), joins no new Rundenspiele of an older engine,
+but finishes those it is in, each on the rules it was started on (Brain.on).
 
 Every move is computed by the local bridge worker on the server's state: the candidate the
 agent picks is recorded as engine calls and sent as `action { type, params }`. Each live game
@@ -43,6 +44,7 @@ import json
 import logging
 import os
 import queue
+import re
 import secrets
 import threading
 import time
@@ -286,6 +288,19 @@ SEARCH_BUDGET = 15.0      # seconds of search per turn (search: agents)
 KI_ROOT = Path(__file__).resolve().parents[2]
 
 
+def server_version(url):
+    """The engine version the server at `url` runs (APP_VERSION in its js/data.js), None if it
+    can't be read."""
+    try:
+        r = requests.get(url.rstrip("/") + "/js/data.js", timeout=20)
+        r.raise_for_status()
+    except requests.RequestException as e:
+        log.warning("engine version of %s unknown: %s", url, e)
+        return None
+    m = re.search(r"APP_VERSION\s*=\s*'([^']+)'", r.text)
+    return m.group(1) if m else None
+
+
 def engine_dir_of(version):
     """The local copy of engine `version`: the folders the server keeps it in, or a frozen copy."""
     server = KI_ROOT.parent / "multiplayer-server"
@@ -315,12 +330,15 @@ class Brain:
         self.spec = agent_spec
         self.lock = threading.Lock()
         self.others = {}                 # engine version -> Brain on that engine's bridge
+        self.current = self.version      # the version the server runs now (Manager.check_engine)
 
     def on(self, engine):
-        """The Brain for a Rundenspiel of engine version `engine`: same agent, same lock, the
-        rules that game was started on. Raises if there is no local copy: wrong rules would
-        only produce refused or bad moves."""
-        if engine in (None, "current", self.version):
+        """The Brain for a game of engine version `engine` (None, "current": the one the server
+        runs now): same agent, same lock, the rules that game was started on. Raises if there
+        is no local copy: wrong rules would only produce refused or bad moves."""
+        if engine in (None, "current"):
+            engine = self.current
+        if engine == self.version:
             return self
         with self.lock:
             if engine not in self.others:
@@ -568,7 +586,7 @@ class Conn:
         raises on a rejected action; `latest()` returns the newest server state. False if the
         server refused to end the turn: the caller has to try again. `brain`: the one of the
         game's engine, if it has its own."""
-        brain = brain or self.brain
+        brain = brain or self.brain.on(None)
         rejected, sent, tags = 0, 0, []
         for _ in range(80):
             tag, actions = brain.next_actions(state, me, key)
@@ -613,7 +631,7 @@ class Conn:
         city). False if the server still refuses."""
         if state.get("over") or state["cur"] != me:
             return True
-        for typ, params in (brain or self.brain).end_actions(state, me, key):
+        for typ, params in (brain or self.brain.on(None)).end_actions(state, me, key):
             try:
                 send(typ, params)
             except RuntimeError as e:
@@ -831,13 +849,14 @@ class LiveGame(Conn):
         players = [{"civ": p.get("civ"), "kind": p.get("kind", "human"), "ability": p.get("ability", "basis")}
                    for p in (g.get("players") or [])]
         cfg = data.get("cfg") or g["cfg"]
-        setup = self.brain.roll_setup(players, data["seed"], cfg)
-        o, cell = self.brain.place(data["plan"], me, players, setup, data["seed"])
+        brain = self.brain.on(None)
+        setup = brain.roll_setup(players, data["seed"], cfg)
+        o, cell = brain.place(data["plan"], me, players, setup, data["seed"])
         self.call("placement:action", {"o": o, "cell": cell})
         self.log.info("placed start tile o=%s cell=%s", o, cell)
 
     def live_draft(self, draft):
-        pick = self.brain.draft_pick(draft, self.g["lobbyIndex"], self.acc.name)
+        pick = self.brain.on(None).draft_pick(draft, self.g["lobbyIndex"], self.acc.name)
         if pick:
             self.call("draft:pick", {"id": pick})
             self.log.info("drafted %s", pick)
@@ -941,7 +960,7 @@ class Rundenspiele(Conn):
     def fit(self, s):
         """(why, hard) for the open Rundenspiel `s`: hard = it can't be joined or played at
         all, else only the join filters are against it. why None = fine."""
-        if s.get("engine") and s["engine"] not in (self.brain.version, "current"):
+        if s.get("engine") and s["engine"] not in (self.brain.on(None).version, "current"):
             return f"engine {s['engine']}", True
         cfg = s.get("config") or {}
         seats = s.get("seats") or []
@@ -1159,13 +1178,32 @@ class Manager:
         self.live: list[LiveGame] = []
         self.refused = {}                # session id -> until when we don't join it again
         self.note = ""
-        self.last_lobby_poll = self.last_host_try = self.last_auth_check = 0.0
+        self.last_lobby_poll = self.last_host_try = self.last_auth_check = self.last_engine_check = 0.0
         self.rs = self.mm = None
         self.logs = LogBuffer()
         log.addHandler(self.logs)
 
+    ENGINE_CHECK_EVERY = 300     # seconds between looks at the server's engine version
+
+    def check_engine(self):
+        """Play on the engine the server runs: after a deploy new games use the new rules (the
+        running Rundenspiele keep theirs). A version without a local copy keeps the old one."""
+        self.last_engine_check = time.time()
+        version = server_version(self.acc.url)
+        brain = self.brain
+        if not version or version == brain.current:
+            return
+        try:
+            brain.on(version)
+        except RuntimeError as e:
+            log.error("the server runs engine %s, staying on %s: %s", version, brain.current, e)
+            return
+        log.info("the server runs engine %s (was %s): new games use it", version, brain.current)
+        brain.current = version
+
     def start(self):
         """Log in and open the Rundenspiele and matchmaking connections."""
+        self.check_engine()
         self.acc.login()
         if not self.acc.is_bot:
             self.settings["match"] = False
@@ -1249,6 +1287,8 @@ class Manager:
                 for c in (self.rs, self.mm):
                     if c:
                         c.command("reconnect")
+        if now - self.last_engine_check > self.ENGINE_CHECK_EVERY:
+            self.check_engine()
         active = self.active()
         j, h = st["join"], st["host"]
         joined = [g for g in active if g.kind == "join"]
@@ -1276,7 +1316,7 @@ class Manager:
         rs = self.rs
         return {
             "account": {"name": self.acc.name, "isBot": self.acc.is_bot, "url": self.acc.url},
-            "engine": self.brain.version, "agent": self.brain.spec,
+            "engine": self.brain.on(None).version, "agent": self.brain.spec,
             "settings": self.settings, "note": self.note,
             "live": [g.info() for g in reversed(self.live)],
             "rundenspiele": [{"id": s.get("id"), "joinCode": s.get("joinCode"), "status": s.get("status"),
@@ -1368,7 +1408,14 @@ def main():
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     env = read_env(args.config)
-    brain = Brain(args.agent, device=args.device)
+    # the engine the server runs; without a local copy (or unreadable) the default one, and
+    # Manager.check_engine tries again
+    version, engine_dir = server_version(env["HOCHCIV_URL"]), None
+    try:
+        engine_dir = version and engine_dir_of(version)
+    except RuntimeError as e:
+        log.error("%s, starting on the default engine", e)
+    brain = Brain(args.agent, engine_dir=engine_dir, device=args.device)
     log.info("engine %s, agent %s on %s", brain.version, args.agent, brain.device)
     acc = Account(env["HOCHCIV_URL"], env.get("HOCHCIV_USER"), env.get("HOCHCIV_PASSWORD"),
                   token=env.get("HOCHCIV_TOKEN"), name=env.get("HOCHCIV_NAME"))

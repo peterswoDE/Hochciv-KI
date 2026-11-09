@@ -346,6 +346,7 @@ const SERVER_ACTION = {
   buyPower: (S, pi, n) => ['buyPower', { n: n || 1 }],
   buildRoad: (S, pi, r, c, target) => ['buildRoad', { r, c, target }],
   buyTile: (S, pi, r, c) => ['buyTile', { r, c }],
+  claimTile: (S, pi, r, c) => ['claimTile', { r, c }],      // Kolonialismus since v103
   coverPop: (S, pi, kind, amount) => ['coverPop', { kind, amount }],
   uncoverPop: (S, pi, kind, amount) => ['uncoverPop', { kind, amount }],
   buildWonder: (S, pi, city, wonder) => ['buildWonder', { cityId: city.id, wonder }],
@@ -469,6 +470,7 @@ function serverAction(g, type, params) {
     case 'buyPower': return E.buyPower(S, pi, params.n || 1);
     case 'buildRoad': return E.buildRoad(S, pi, params.r, params.c, params.target);
     case 'buyTile': return E.buyTile(S, pi, params.r, params.c);
+    case 'claimTile': return E.claimTile(S, pi, params.r, params.c);
     case 'coverPop': return E.coverPop(S, pi, params.kind, params.amount);
     case 'uncoverPop': return E.uncoverPop(S, pi, params.kind, params.amount);
     case 'buildWonder': return E.buildWonder(S, pi, need(city()), params.wonder);

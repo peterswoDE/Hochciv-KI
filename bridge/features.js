@@ -254,9 +254,12 @@ function makeFeatures(E, konst) {
   const CAND_F = CAND_NAMES.length;
   const NUM_O = CAND_TYPES.length + NT, WONDER_O = NUM_O + NUM_NAMES.length;
 
+  // since v105 a copy names its way (copyinternet / copyspionage / copykundschafterei): the free
+  // one counts as copyf, the paid ones as copyp, the types up to v104
+  const COPY_WAY_TYPE = { copyinternet: 'copyf', copyspionage: 'copyp', copykundschafterei: 'copyp' };
   const typeOf = tag => {
     const t = tag.split(':')[0];
-    return t === 'road' ? 'road1' : t;
+    return t === 'road' ? 'road1' : COPY_WAY_TYPE[t] || t;
   };
   // target cell of a candidate, for gathering map features
   function targetOf(S, tag) {
