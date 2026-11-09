@@ -73,9 +73,21 @@ MIXES["v2"] = MIXES["all"] + [
 ]
 
 
+# v3: the v2 mix with more 1v1 and more marathon, where ppo12 lost ground against v4 (v106)
+MIXES["v3"] = MIXES["v2"] + [
+    (3, ["L", KI]),
+    (1, ["L", "S"]),
+    (2, ["L", KI, KI, KI]),
+]
+MAPS_V3 = {**MAPS_V2,
+           "2": MAPS_V2["2"] + ["original", "customgen-marathon"],
+           "3": MAPS_V2["3"] + ["customgen-marathon"],
+           "4": MAPS_V2["4"] + ["marathon", "marathon", "customgen-marathon"]}
+
+
 def game_options(rng, mix):
-    """v2: wonders in 40 % of the games, events in half of them (hard or easy)."""
-    if mix != "v2":
+    """v2, v3: wonders in 40 % of the games, events in half of them (hard or easy)."""
+    if mix not in ("v2", "v3"):
         return {}
     o = {"wonders": rng.random() < 0.4}
     ev = rng.random()
@@ -138,8 +150,11 @@ def gae(traj, z, lam, shape=0.0, slope=1.0):
 
 
 class PPO:
-    def __init__(self, net, lr, clip=0.2, vcoef=0.5, ent=0.01, target_kl=0.03):
+    def __init__(self, net, lr, clip=0.2, vcoef=0.5, ent=0.01, target_kl=0.03, ref=None, anchor=0.0):
         self.net, self.clip, self.vcoef, self.ent, self.target_kl = net, clip, vcoef, ent, target_kl
+        # anchor: KL(ref || net) over the candidates, ref = the starting network (frozen), so
+        # that a run improves on it instead of drifting away (ppo10, ppo12)
+        self.ref, self.anchor = ref, anchor
         self.opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4)
 
     def update(self, batch, epochs, mb, device, imit):
@@ -149,7 +164,7 @@ class PPO:
         self.net.train()
         adv = np.array([b[3] for b in batch], np.float32)
         adv = (adv - adv.mean()) / (adv.std() + 1e-6)
-        stats = {"pol": 0.0, "val": 0.0, "ent": 0.0, "imit": 0.0, "kl": 0.0, "clipfrac": 0.0, "n": 0}
+        stats = {"pol": 0.0, "val": 0.0, "ent": 0.0, "imit": 0.0, "kl": 0.0, "clipfrac": 0.0, "anchor": 0.0, "n": 0}
         extra = {"kl0": None, "epochs_done": 0}
         idx = np.arange(len(batch))
         stop = False
@@ -179,6 +194,13 @@ class PPO:
                 ent = -(p_all * logp_all.masked_fill(~mask, 0)).sum(-1).mean()
                 il = F.nll_loss(logp_all.masked_fill(~mask, -1e9), T)
                 loss = pl + self.vcoef * vl - self.ent * ent + imit * il
+                if self.anchor:
+                    with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+                        ref_logits, _ = self.ref(grid, glob, cand, pos, mask)
+                    ref_lp = torch.log_softmax(ref_logits.float(), -1)
+                    ak = (ref_lp.exp() * (ref_lp - logp_all)).masked_fill(~mask, 0).sum(-1).mean()
+                    loss = loss + self.anchor * ak
+                    stats["anchor"] += ak.item() * len(b)
                 self.opt.zero_grad(set_to_none=True)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.net.parameters(), 1.0)
@@ -230,6 +252,9 @@ def main():
     ap.add_argument("--search-tau", type=float, default=0.03)
     ap.add_argument("--search-epochs", type=int, default=1)
     ap.add_argument("--search-kl", type=float, default=0.05, help="the search phase stops at this KL from the played policy")
+    ap.add_argument("--anchor-kl", type=float, default=0.0, help="weight of KL(start network || network) in the loss")
+    ap.add_argument("--anchor-frac", type=float, default=0.0,
+                    help="share of the snapshot seats played by the start network instead of a league snapshot")
     args = ap.parse_args()
 
     device = "cuda"
@@ -245,7 +270,12 @@ def main():
     snap_net, _ = load_net(args.init if not st["league"] else st["league"][-1], device)
     learner_srv = InferenceServer(copy.deepcopy(net).eval(), device)
     snap_srv = InferenceServer(snap_net, device)
-    ppo = PPO(net, args.lr, target_kl=args.target_kl)
+    ref = None
+    if args.anchor_kl:
+        ref = load_net(args.init, device)[0].eval()
+        for q in ref.parameters():
+            q.requires_grad_(False)
+    ppo = PPO(net, args.lr, target_kl=args.target_kl, ref=ref, anchor=args.anchor_kl)
     if args.resume and "opt" in ck:
         ppo.opt.load_state_dict(ck["opt"])
         for g in ppo.opt.param_groups:      # the command line wins over the saved schedule
@@ -259,7 +289,7 @@ def main():
 
     def make_job():
         seats = rng.choices([m[1] for m in mix], weights=[m[0] for m in mix])[0]
-        maps = (MAPS_V2 if args.mix == "v2" else MAPS)[str(len(seats))]
+        maps = {"v2": MAPS_V2, "v3": MAPS_V3}.get(args.mix, MAPS)[str(len(seats))]
         return {"seed": 50_000_000 + next(job_no), "seats": seats, "map": rng.choice(maps),
                 "opts": game_options(rng, args.mix)}
 
@@ -311,7 +341,8 @@ def main():
                 p = out / f"snap_{it:05d}.pt"
                 save_net(net, p, iter=it)
                 st["league"] = (st["league"] + [str(p)])[-8:]
-                snap_srv.load_state(load_net(rng.choice(st["league"]), device)[0].state_dict())
+                pick = args.init if rng.random() < args.anchor_frac else rng.choice(st["league"])
+                snap_srv.load_state(load_net(pick, device)[0].state_dict())
             if it % args.eval_every == 0:
                 if collector:
                     collector.pause()
@@ -419,7 +450,7 @@ def best_key(ev):
 def evaluate(pool, net, device, seeds, mix="all"):
     from .model import NetAgent
     agent = NetAgent(copy.deepcopy(net).eval(), device, greedy=True)
-    if mix == "v2":
+    if mix in ("v2", "v3"):
         from .eval_modes import run_suite
         # a quarter of the full suite, on its own seeds (the full suite is for final numbers)
         return {"suite": run_suite(pool, lambda: agent, "v2", scale=seeds / 240, base_seed=30_000, progress=False)}
