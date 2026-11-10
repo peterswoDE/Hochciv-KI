@@ -6,6 +6,12 @@ That cancels out the start player advantage (as `tools_ki.js stufen` does).
 
     python -m hochciv_ki.eval --agent teacher --opp ki:schwer --players 2 --seeds 50
     python -m hochciv_ki.eval --agent ckpt:checkpoints/bc/latest.pt --players 4
+
+Opponents can be networks too, and a comma-separated list fills the opponent seats in turn
+(head-to-head: does a new model beat the old one, not only the KI?):
+
+    python -m hochciv_ki.eval --agent ckpt:checkpoints/ppo3/best.pt --opp ckpt:checkpoints/v2.pt
+    python -m hochciv_ki.eval --agent ckpt:a.pt --opp ckpt:b.pt,ki:schwer --players 4
 """
 from __future__ import annotations
 
@@ -19,7 +25,10 @@ from .pool import BridgePool
 
 
 def opp_seat(spec: str):
-    """'ki:schwer', 'ki:mittel', 'ki:leicht', 'bot:prinz', 'bot:koenig', ..."""
+    """'ki:schwer', 'ki:mittel', 'ki:leicht', 'bot:prinz', 'bot:koenig', ...; a network
+    ('ckpt:…', 'ckpts:…') is an agent seat."""
+    if is_net(spec):
+        return {"kind": "agent"}
     kind, _, lvl = spec.partition(":")
     if kind == "ki":
         return {"kind": "ki", "kiLevel": lvl or "schwer"}
@@ -38,6 +47,10 @@ def mode_name(n_players, map_key, opts):
     return ", ".join(tags)
 
 
+def is_net(spec: str):
+    return spec.startswith("ckpt:") or spec.startswith("ckpts:")
+
+
 def jobs_for(n_players, seeds, base_seed, map_key):
     for s in range(seeds):
         for seat in range(n_players):
@@ -48,12 +61,20 @@ def run_eval(pool: BridgePool, make_agent, opp: str, n_players=2, seeds=50, base
              map_key="plaettchen", progress=True, opts=None):
     """opts: game options for the bridge (events, eventMode, wonders)."""
     agent = make_agent()
+    specs = opp.split(",")
+    nets = {sp: agent_factory(sp)() for sp in set(specs) if is_net(sp)}
     jobs = list(jobs_for(n_players, seeds, base_seed, map_key))
 
     def one(bridge, job):
-        players = [opp_seat(opp) for _ in range(job["n"])]
+        players, agents = [None] * job["n"], {job["seat"]: agent}
+        others = [i for i in range(job["n"]) if i != job["seat"]]
+        for k, i in enumerate(others):
+            sp = specs[k % len(specs)]
+            players[i] = opp_seat(sp)
+            if sp in nets:
+                agents[i] = nets[sp]
         players[job["seat"]] = {"kind": "agent"}
-        r = play_game(bridge, pool.dims, players, {job["seat"]: agent}, seed=job["seed"], map_key=job["map"],
+        r = play_game(bridge, pool.dims, players, agents, seed=job["seed"], map_key=job["map"],
                       **(opts or {}))
         return job, r
 
@@ -62,7 +83,7 @@ def run_eval(pool: BridgePool, make_agent, opp: str, n_players=2, seeds=50, base
     dt = time.perf_counter() - t0
     scores, hows, rounds, unfinished = [], Counter(), [], 0
     for job, r in results:
-        pi = r.agents[0]
+        pi = next(p for p, slot in r.slot_of.items() if slot == job["seat"])
         scores.append(r.score(pi))
         if not r.over:
             unfinished += 1
@@ -96,6 +117,14 @@ def agent_factory(spec: str, device="cuda"):
         from .model import load_agent
         greedy, path = spec.startswith("ckpt:"), spec.split(":", 1)[1]
         return lambda: load_agent(path, device=device, greedy=greedy)
+    if spec.startswith("search:"):
+        # search:<path>[:k] – one-step look-ahead with the value head (search.py)
+        from .model import load_agent
+        from .search import SearchAgent
+        path, k = spec.split(":", 1)[1], 4
+        if path.rsplit(":", 1)[-1].isdigit():
+            path, k = path.rsplit(":", 1)[0], int(path.rsplit(":", 1)[1])
+        return lambda: SearchAgent(load_agent(path, device=device), k=k)
     raise ValueError(spec)
 
 

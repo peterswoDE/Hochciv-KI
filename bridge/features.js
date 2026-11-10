@@ -29,6 +29,8 @@ function makeFeatures(E, konst) {
     worldPop = fn('worldPop'), roadLevel = fn('roadLevel'),
     capitalsTaken = fn('capitalsTaken'), abilitiesOf = fn('abilitiesOf'),
     wonderCost = fn('wonderCost'), hasWonder = fn('hasWonder');
+  const claimsLeft = fn('claimsLeft'), copyWaysOpen = fn('copyWaysOpen'),
+    freeTechsLeft = fn('freeTechsLeft'), freeTechOptions = fn('freeTechOptions'), isAbil = fn('isAbil');
   const empireCount = S => S.players.filter(p => p.kind !== 'barbar').length;   // barbarians come last
   const TECHS = konst('TECHS');
   const TECH_KEYS = Array.isArray(TECHS) ? TECHS.map(t => t.k) : Object.keys(TECHS);
@@ -128,7 +130,11 @@ function makeFeatures(E, konst) {
     'freeArmies', 'backPicks', 'wonders', 'powerOf', 'claim',
     ...CIV_KEYS.map(k => 'civ:' + k), ...ABILS.map(k => 'abil:' + k),
     ...TECH_KEYS.map(k => 'tech:' + k), ...TECH_KEYS.map(k => 'avail:' + k),
-    ...WONDER_KEYS.map(k => 'wonderOwn:' + k), 'wonderCost', 'cultureWin'];
+    ...WONDER_KEYS.map(k => 'wonderOwn:' + k), 'wonderCost', 'cultureWin',
+    // v101-v105 rules: free claims this round (Kolonialismus), copy ways still open this round,
+    // free techs left in the game and whether one can be taken this round (Greece)
+    'claimsLeft', 'copyOpen:internet', 'copyOpen:spionage', 'copyOpen:kundschafterei',
+    'freeTechsLeft', 'freeTechNow'];
   const SEAT_F = SEAT_NAMES.length;
   const GAME_NAMES = ['round', 'players', 'duel', 'marathon', 'wonders', 'events', 'claims', 'worldPop',
     'evEasy', 'nukeBan', 'barbarians', ...EVENT_KEYS.map(k => 'event:' + k),
@@ -173,6 +179,53 @@ function makeFeatures(E, konst) {
     i += NW;
     out[i++] = S.wo ? wonderCost(S, pi) / 40 : 0;
     out[i++] = p.cultureWin != null ? 1 : 0;
+    // engines before v101/v103/v105 don't have these: 0
+    out[i++] = claimsLeft ? claimsLeft(S, pi) / 3 : 0;
+    const open = copyWaysOpen ? copyWaysOpen(S, pi).map(w => w.k) : [];
+    for (const k of ['internet', 'spionage', 'kundschafterei']) out[i++] = open.includes(k) ? 1 : 0;
+    out[i++] = freeTechsLeft && isAbil(p, 'gratistech') ? freeTechsLeft(p) / 2 : 0;
+    out[i++] = freeTechOptions ? (freeTechOptions(S, pi).length ? 1 : 0) : 0;
+  }
+
+  // ---------------------------------------------------------------- victory progress
+  /* How far every seat is along each victory path, 0..1 (DESIGN_SHAPING.md). Indexed by
+     player index (turn order). Barbarians can't win: null; dead seats get dead: true. No
+     simulation, so it is cheap. */
+  const FIELDS = konst('FIELDS'), wondersOf = fn('wondersOf'), capitalsToWin = fn('capitalsToWin');
+  const TECH_BY_K = Object.fromEntries((Array.isArray(TECHS) ? TECHS : Object.values(TECHS)).map(t => [t.k, t]));
+  function progress(S) {
+    const w = worldPop(S) || 1, toWin = capitalsToWin(S);
+    return S.players.map((p, pi) => {
+      if (p.kind === 'barbar') return null;
+      if (p.dead || !citiesOf(S, pi).length) return { econ: 0, sci: 0, cult: 0, mil: 0, claim: 0, prog: 0, dead: true };
+      // economic: share of the world population against the seat's threshold
+      const econ = Math.min(1, popOf(S, pi) / w / E.victoryOption(S, p).frac);
+      // science: the highest age reached in every field (0..3); one age-3 tech in each field
+      // makes the Singularity researchable (0.9), researching it is a claim
+      const top = FIELDS.map(() => -1);
+      for (const k in p.techs) {
+        const t = p.techs[k] && TECH_BY_K[k];
+        if (t && t.age > top[t.f]) top[t.f] = t.age;
+      }
+      const sci = 0.9 * top.reduce((a, g) => a + (g + 1) / 4, 0) / FIELDS.length;
+      // culture: the pyramid rule needs 3 wonders of level 1 and 2 of level 2 before a level 3
+      let cult = 0;
+      if (S.wo) {
+        const c = { 1: 0, 2: 0, 3: 0 };
+        for (const x of wondersOf(S, pi)) c[x.lvl]++;
+        cult = c[3] > 0 ? 1 : 0.9 * (Math.min(c[1], 3) + Math.min(c[2], 2)) / 5;
+      }
+      // military: captured capitals (the marathon needs two), plus the best running siege of
+      // an enemy capital – a capture takes two successful siege turns in a row
+      let siege = 0;
+      for (const c of S.cities) {
+        if (!c.cap || c.owner === pi || S.players[c.owner].kind === 'barbar') continue;
+        siege = Math.max(siege, Math.min(1, ((S.sieges || {})[pi + '|' + c.id] || 0) / 2));
+      }
+      const mil = Math.min(1, (capitalsTaken(p) + siege) / toWin);
+      const claim = (S.claims || []).some(c => c.pi === pi) ? 1 : 0;
+      return { econ, sci, cult, mil, claim, prog: Math.max(econ, sci, cult, mil, claim) };
+    });
   }
 
   function glob(S, me) {
@@ -213,9 +266,12 @@ function makeFeatures(E, konst) {
   const CAND_F = CAND_NAMES.length;
   const NUM_O = CAND_TYPES.length + NT, WONDER_O = NUM_O + NUM_NAMES.length;
 
+  // since v105 a copy names its way (copyinternet / copyspionage / copykundschafterei): the free
+  // one counts as copyf, the paid ones as copyp, the types up to v104
+  const COPY_WAY_TYPE = { copyinternet: 'copyf', copyspionage: 'copyp', copykundschafterei: 'copyp' };
   const typeOf = tag => {
     const t = tag.split(':')[0];
-    return t === 'road' ? 'road1' : t;
+    return t === 'road' ? 'road1' : COPY_WAY_TYPE[t] || t;
   };
   // target cell of a candidate, for gathering map features
   function targetOf(S, tag) {
@@ -337,7 +393,7 @@ function makeFeatures(E, konst) {
   }
 
   return {
-    grid, glob, evaluate, encodeCands,
+    grid, glob, evaluate, encodeCands, progress,
     dims: { GRID_C, GLOB_N, CAND_F, NSEAT, NT, CAND_TYPES, TECH_KEYS, GRID_SCALE,
       names: { grid: GRID_NAMES, glob: GLOB_NAMES, cand: CAND_NAMES } },
   };

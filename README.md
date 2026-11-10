@@ -11,7 +11,10 @@ py -3.13 -m venv .venv
 ```
 
 Node.js must be on the PATH. The rules engine is loaded read-only from
-`..\multiplayer-server\HochCiv\js`; set `HOCHCIV_ENGINE_DIR` to use another copy.
+`..\multiplayer-server\HochCiv\js`; set `HOCHCIV_ENGINE_DIR` to use another copy. That folder
+changes with the branch checked out there, so long runs use a frozen copy (`git archive` into
+`runs\engines\<version>`). The online bot needs no setting: it plays on the engine the server
+runs (see *Playing online*).
 
 ## Selftest
 
@@ -53,6 +56,27 @@ Plays complete games with a random agent against the JS KI and bots on tile, fix
 
 Agents: `kiturn` (the JS KI's full turn), `teacher` (the JS KI planner one step at a time, the
 imitation target), `ckpt:<path>` (a trained network). Every seed is played once per seat.
+
+`--opp` also takes networks, and a comma-separated list fills the opponent seats in turn, so a
+new model can be checked head to head, not only against the KI (in `eval` and `eval_modes`):
+
+```
+.venv\Scripts\python -m hochciv_ki.eval_modes --agent ckpt:checkpoints\ppo3\best.pt --opp ckpt:checkpoints\v2.pt
+.venv\Scripts\python -m hochciv_ki.eval --agent ckpt:a.pt --opp ckpt:b.pt,ki:schwer --players 4
+```
+
+A network against itself scores exactly the fair share (every seed from every seat).
+
+`search:<path>[:k]` plays a network with a one-step look-ahead (`hochciv_ki/search.py`,
+DESIGN_SEARCH.md): the policy's top k candidates (default 4) are tried on copies of the game
+and scored with the value head, "end" after the other seats' turns played by KI schwer. It works
+in `eval`, `eval_modes` and the online client (`--agent search:checkpoints2.pt`, at most 15 s
+of search per turn); about 0.1–0.6 s per decision.
+
+`train_ppo --search-frac 0.25` lets the network learn from that search during training
+(stage 3, `hochciv_ki/expert.py`): a quarter of the learner's decisions get a target from the
+search, trained in a phase after the PPO update. `python -m hochciv_ki.expert` measures what it
+costs and how often it changes the best move.
 
 Baselines (engine v98, tile map, against KI schwer; score = share of wins, fair share 1/n):
 
@@ -111,6 +135,42 @@ Baseline before v2 training: the widened v1 model against KI schwer (seeds 90000
 | 4p, marathon (40) | 0.250 ± 0.136 | 0.250 |
 | 3p, custom marathon map, wonders (30) | 0.500 ± 0.182 | 0.333 |
 
+## v4 (production model since 2026-11-06)
+
+`checkpoints/v4.pt` = `checkpoints/ppo9/best.pt`, iteration 20: first run with search stage 3
+(DESIGN_SEARCH.md), from `ppo8`, `--lr 5e-5 --target-kl 0.05 --search-frac 0.25 --search-k 3
+--search-tau 0.03`, no shaping. Plays without search. Full v2 suite on seeds not used to pick
+it (`--base-seed 290000`, 798 games): against KI schwer 1.536 ± 0.145, head to head against v3
+1.281 ± 0.137 (9 modes better, 2 equal, none worse). Hex suite against KI schwer 1.795.
+Training evals swung between 1.18 and 1.48 over the run, so iteration 20 is a high point, not a
+stable level.
+
+## Engine v106 (2026-11-09/10)
+
+v106 adds free claims (v103), the founding rule next to foreign claims (v104), copy ways
+(v105) and limits Greece's free techs (v101). The network gets six new inputs per seat for
+them (`claimsLeft`, three open copy ways, free techs left / available). `checkpoints/v4x.pt` is
+v4 widened to these inputs (new weights zero, same decisions as v4). All numbers below are on
+v106, v2 suite, `--base-seed 490000`, 798 games, checked with `hochciv_ki.promote`:
+
+| candidate | against KI schwer (mean relative) | head to head against v4 | gate |
+|---|---|---|---|
+| v4 | 1.431 | – | production |
+| ppo12 (v4 trained on v106, v2 mix) | 1.177, marathon 0.000 | 0.705, z = −6.2 | keep v4 |
+| v4 with search (top 4) | 1.304, marathon 0.175 | 0.889, z = −2.9 | keep v4 |
+| ppo13 (from v4x, mix v3, `--anchor-kl 0.5 --anchor-frac 0.5`) | **1.605**, no mode worse | 0.926, z = −0.6 | keep v4 (h2h not significant) |
+
+The search assumes the opponents play like KI schwer and loses to plain v4 offline and online.
+ppo13 beats KI schwer clearly more than v4 and ties v4 head to head; it runs as the second
+bot (NeuraNew) for a live comparison, v4 stays the production bot.
+
+## v3 (production model from 2026-11-03 to 2026-11-06)
+
+`checkpoints/v3.pt` = run B' (`checkpoints/ppo4/best.pt`, iteration 80): PPO from v2 on the v2 mix
+with reward shaping (DESIGN_SHAPING.md), `--lr 5e-5 --target-kl 0.05 --imit 0.03 --shape 1`.
+Full v2 suite, same seeds: against KI schwer it ties v2 (mean relative score 1.184 each); head
+to head against v2 it scores 1.15, at or above the fair share in all 11 modes.
+
 ## Training
 
 ```
@@ -126,6 +186,10 @@ rem 3. PPO self-play (resumable with --resume)
 .venv\Scripts\python -m hochciv_ki.train_ppo --init checkpoints\bc1\best.pt --out checkpoints\ppo --mix 1v1
 .venv\Scripts\python -m hochciv_ki.train_ppo --out checkpoints\ppo --resume --mix all
 ```
+
+`--continuous` keeps every worker playing: an iteration takes the next `--games` finished games,
+long games carry over, and games go on during the update (about 1.4× faster than waiting for
+the slowest game of every batch).
 
 `data\` and `checkpoints\` are not in git.
 
@@ -143,12 +207,21 @@ HOCHCIV_TOKEN=hcbot_...
 regular account that logs in with a password only.)
 
 ```
-.venv\Scripts\python -m hochciv_ki.online.client --config online.env --agent ckpt:checkpoints\v1.pt --open
+.venv\Scripts\python -m hochciv_ki.online.client --config online.env --agent ckpt:checkpoints\v4.pt --open
 ```
+
+The engine is the one the server runs: the client reads `APP_VERSION` from the server's
+`js/data.js` at the start and every 5 minutes, and plays new games on the local copy of that
+version (`..\multiplayer-server\HochCiv-<version>\js`, `..\multiplayer-server\HochCiv\js` or
+`runs\engines\<version>`). A deploy switches it over by itself; running Rundenspiele keep the
+engine they were started on. If there is no local copy of the new version it stays on the old one
+and logs an error.
 
 It logs in with the token (`POST /api/auth/bot`) and opens a control panel on
 <http://127.0.0.1:8765/> (`--port`, `--open` opens it in the browser, `--no-panel` runs with
-the saved settings). The panel shows the running games, the public lobbies and open
+the saved settings, `--device cpu|cuda` where a `ckpt:` network runs; the default takes the GPU
+if there is one). The network needs no GPU: on the CPU a move takes about 4 ms, slightly less than
+on the GPU. The panel shows the running games, the public lobbies and open
 Rundenspiele with a *Join* button, the log, and the settings in a column on the right. Every
 change is saved at once (`runs/online-settings.json`). The switches work together:
 

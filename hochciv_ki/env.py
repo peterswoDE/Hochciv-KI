@@ -19,6 +19,7 @@ class Obs:
     cand: np.ndarray           # [n, CAND_F]
     pos: np.ndarray            # [n, 2] int32
     grid: np.ndarray | None    # [C, H, W]
+    prog: list | None = None   # victory progress per player index, -1: can't win
 
 
 def _f32(s, shape=None):
@@ -33,7 +34,7 @@ def decode_obs(res, dims) -> Obs:
         grid = _f32(res["grid"], (dims["GRID_C"], *res["gshape"]))
     pos = np.frombuffer(base64.b64decode(res["pos"]), dtype=np.int32).reshape(n, 2)
     return Obs(res["pi"], res["round"], res["tags"], res["teacher"], _f32(res["glob"]),
-               _f32(res["cand"], (n, dims["CAND_F"])), pos, grid)
+               _f32(res["cand"], (n, dims["CAND_F"])), pos, grid, res.get("prog"))
 
 
 @dataclass
@@ -95,7 +96,10 @@ def play_game(bridge: Bridge, dims, players, agents: dict, seed, map_key="plaett
                 steps += 1
                 continue
             obs = decode_obs(bridge.call("observe", gid=gid), dims)
-            a, extra = by_pi[pi].act(obs)
+            if getattr(by_pi[pi], "needs_game", False):     # search: plays on copies of the game
+                a, extra = by_pi[pi].act(obs, game=(bridge, gid))
+            else:
+                a, extra = by_pi[pi].act(obs)
             if record:
                 traj[pi].append((obs, a, extra))
             st = bridge.step(gid, a)

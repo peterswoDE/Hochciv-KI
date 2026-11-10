@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from concurrent.futures import Future
 
 import numpy as np
@@ -22,6 +23,7 @@ class InferenceServer:
         self.q: queue.Queue = queue.Queue()
         self.lock = threading.Lock()          # held while the weights are swapped
         self._stop = False
+        self.stats = {"batches": 0, "items": 0, "fwd_s": 0.0}
         self._t = threading.Thread(target=self._run, daemon=True)
         self._t.start()
 
@@ -47,6 +49,7 @@ class InferenceServer:
                     items.append(self.q.get(timeout=self.wait))
             except queue.Empty:
                 pass
+            t0 = time.perf_counter()
             try:
                 with self.lock, torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
                     logits, v = self.net(*collate([s for s, _ in items], self.device))
@@ -54,6 +57,9 @@ class InferenceServer:
                 v = torch.sigmoid(v.float()).cpu().numpy()
                 for i, (s, f) in enumerate(items):
                     f.set_result((logits[i, :s[2].shape[0]], float(v[i])))
+                self.stats["batches"] += 1
+                self.stats["items"] += len(items)
+                self.stats["fwd_s"] += time.perf_counter() - t0
             except Exception as e:  # noqa: BLE001 - hand the error to every waiting thread
                 for _, f in items:
                     if not f.done():

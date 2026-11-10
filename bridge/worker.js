@@ -50,6 +50,24 @@ const CIV_BY_KEY = Object.fromEntries(CIVS.map(c => [c.k, c]));
 const armiesOf = konst('armiesOf');
 const FEAT = require('./features').makeFeatures(E, konst);
 
+/* Profiling (HOCHCIV_PROFILE=1, profile_collect.py): wall time per command and per engine or
+   feature function, inclusive. Off by default: then nothing is wrapped. */
+const PROF = process.env.HOCHCIV_PROFILE ? {} : null;
+function timed(name, f) {
+  return function (...args) {
+    const t0 = process.hrtime.bigint();
+    try { return f.apply(this, args); } finally {
+      const p = PROF[name] || (PROF[name] = { ms: 0, n: 0 });
+      p.ms += Number(process.hrtime.bigint() - t0) / 1e6;
+      p.n++;
+    }
+  };
+}
+if (PROF) {
+  for (const k of ['kiTurn', 'botTurn', 'endTurn', 'kiCandidates', 'kiClone', 'kiScore', 'kiSpent', 'income', 'kiStepMemo', 'kiContext']) E[k] = timed('engine.' + k, E[k]);
+  for (const k of ['evaluate', 'grid', 'glob', 'encodeCands', 'progress']) FEAT[k] = timed('feat.' + k, FEAT[k]);
+}
+
 /* ------------------------------------------------------------------ games */
 const MAX_TURN_STEPS = 60;
 const games = new Map();   // gid -> { S, agents: Set<pi>, turn: per-turn KI context or null }
@@ -125,7 +143,7 @@ function genCustomMap(seed, n, marathon = false) {
   throw new Error('no custom map for ' + n + ' players');
 }
 
-/* map: 'plaettchen' (tile map with placement, also the lobby's "random"), 'original', 'gross',
+/* map: 'plaettchen' (tile map with placement, also the lobby's "random"), 'plaettchen-hex' (hexagonal tiles), 'original',
    'marathon' (the standard marathon map, 4 empires), 'customgen' / 'customgen-marathon' (a
    random custom map, genCustomMap, the second one with the marathon rules), or a custom map
    object as stored by the map editor ({ name, rows, spawns, marathon?, ... }). Agent seats
@@ -135,7 +153,7 @@ function reset(a) {
   const seed = (a.seed ?? Math.floor(Math.random() * 2 ** 31)) | 0;
   const map = a.map === 'customgen' || a.map === 'customgen-marathon'
     ? genCustomMap(seed, a.players.length, a.map === 'customgen-marathon') : (a.map || 'plaettchen');
-  const fixed = map === 'original' || map === 'gross';
+  const fixed = map === 'original';
   const players = makePlayers(a.players, seed, fixed);
   const cfg = {
     seed, players, duel: players.length === 2, events: !!a.events,
@@ -151,8 +169,8 @@ function reset(a) {
     }
     cfg.marathon = true;
     draftMarathon(cfg, seed);
-  } else if (map === 'plaettchen') {
-    const plan = E.tilePlan(players.map(p => p.civ), seed);
+  } else if (map === 'plaettchen' || map === 'plaettchen-hex') {
+    const plan = E.tilePlan(players.map(p => p.civ), seed, { hex: map === 'plaettchen-hex' });
     if (!plan) throw new Error('no tile map for ' + players.length + ' players');
     const setup = E.rollSetup(Object.assign({}, cfg));
     const rnd = E.mapRng(seed + 12345);
@@ -162,7 +180,7 @@ function reset(a) {
     });
     Object.assign(cfg, { map: E.tileMap(plan), avail: setup.avail, wpool: setup.wpool });
   } else if (fixed) {
-    cfg.map = JSON.parse(JSON.stringify(konst(map === 'gross' ? 'MAP_GROSS' : 'DEFAULT_MAP')));
+    cfg.map = JSON.parse(JSON.stringify(konst('DEFAULT_MAP')));
   } else {
     const r = E.checkCustomMap(map);
     if (r.error) throw new Error('custom map: ' + r.error);
@@ -292,6 +310,8 @@ function observe(g, wantGrid = true) {
   const out = {
     pi, round: S.round, tags: tags.concat(['end']), teacher: ev.teacher,
     glob: b64(FEAT.glob(S, pi)), cand: b64(cand), pos: b64(pos),
+    // victory progress per player index, -1 for seats that can't win (barbarians, dead)
+    prog: FEAT.progress(S).map(x => (x && !x.dead ? x.prog : -1)),
   };
   if (wantGrid) { const gr = FEAT.grid(S, pi); out.grid = b64(gr); out.gshape = [gr.h, gr.w]; }
   return out;
@@ -326,6 +346,7 @@ const SERVER_ACTION = {
   buyPower: (S, pi, n) => ['buyPower', { n: n || 1 }],
   buildRoad: (S, pi, r, c, target) => ['buildRoad', { r, c, target }],
   buyTile: (S, pi, r, c) => ['buyTile', { r, c }],
+  claimTile: (S, pi, r, c) => ['claimTile', { r, c }],      // Kolonialismus since v103
   coverPop: (S, pi, kind, amount) => ['coverPop', { kind, amount }],
   uncoverPop: (S, pi, kind, amount) => ['uncoverPop', { kind, amount }],
   buildWonder: (S, pi, city, wonder) => ['buildWonder', { cityId: city.id, wonder }],
@@ -349,21 +370,57 @@ function recording(g, fn) {
   try { const r = fn(); return Object.assign(r, { actions: rec.list }); } finally { rec.S = null; rec.list = null; }
 }
 
-/* The server's state for the agent at state index `pi`. Old turn context is kept while the
-   same turn goes on (failed candidates, committed armies). */
+/* The server's state for the agent at state index `pi` in online game `key`. Old turn context
+   is kept while the same turn of the same game goes on (failed candidates, committed armies);
+   the client loads all its games into one gid. */
 function load(a) {
   const S = a.state;
   const pi = a.pi;
   S.players[pi].kiLevel = a.kiLevel || 'schwer';
   const gid = a.gid ?? (games.size ? Math.max(...games.keys()) + 1 : 1);
   const old = games.get(gid);
-  const g = { S, agents: new Set([pi]), turn: null, online: true };
-  if (old && old.turn && old.turn.pi === S.cur && old.turn.round === S.round) {
+  const g = { S, key: a.key, agents: new Set([pi]), turn: null, online: true };
+  if (old && old.key === a.key && old.turn && old.turn.pi === S.cur && old.turn.round === S.round) {
     g.turn = old.turn;
     g.turn.K = E.kiContext(S, S.cur);   // armies and resources changed
   }
   games.set(gid, g);
   return Object.assign({ gid }, status(g));
+}
+
+/* The server refused candidate `tag`: not offered again this turn. The turn context is gone
+   if another game was loaded since, or if "end" ran. */
+function refuse(a) {
+  const g = game(a);
+  if (g.key !== a.key || !g.turn) return { refused: false };
+  g.turn.failed.add(a.tag);
+  return { refused: true };
+}
+
+/* A copy of game `gid` for the search (DESIGN_SEARCH.md), as a new game. Only the player on
+   turn stays an agent; every other seat that isn't a bot or the barbarians is played by KI
+   schwer (the opponent model, also for people online). Hidden randomness is not copied: a new
+   seed, and the pre-rolled event of the next round is rolled again. The turn context comes
+   along, including the candidate list of the last observe, so step indices stay valid. */
+function fork(a) {
+  const g = game(a), S0 = g.S, pi = S0.cur;
+  const S = E.kiClone(S0, a.seed | 0);
+  delete S.kiSim;
+  S.evNext = null;
+  S.players.forEach((p, i) => {
+    if (i !== pi && p.kind !== 'bot' && p.kind !== 'barbar') { p.kind = 'ki'; p.kiLevel = 'schwer'; }
+  });
+  const f = { S, agents: new Set([pi]), turn: null };
+  const t = g.turn;
+  if (t && t.pi === pi && t.round === S.round) {
+    f.turn = Object.assign({}, t, {
+      K: E.kiContext(S, pi), memo: { committed: new Set(t.memo.committed || []) },
+      failed: new Set(t.failed), cands: t.cands && t.cands.slice(),
+    });
+  }
+  const gid = Math.max(...games.keys()) + 1;
+  games.set(gid, f);
+  return Object.assign({ gid }, status(f));
 }
 
 /* Online "end": position armies and use picks (recorded), then the server's endTurn. */
@@ -413,6 +470,7 @@ function serverAction(g, type, params) {
     case 'buyPower': return E.buyPower(S, pi, params.n || 1);
     case 'buildRoad': return E.buildRoad(S, pi, params.r, params.c, params.target);
     case 'buyTile': return E.buyTile(S, pi, params.r, params.c);
+    case 'claimTile': return E.claimTile(S, pi, params.r, params.c);
     case 'coverPop': return E.coverPop(S, pi, params.kind, params.amount);
     case 'uncoverPop': return E.uncoverPop(S, pi, params.kind, params.amount);
     case 'buildWonder': return E.buildWonder(S, pi, need(city()), params.wonder);
@@ -432,6 +490,7 @@ function serverAction(g, type, params) {
 const handlers = {
   server_action: a => { const g = game(a); return Object.assign({ err: serverAction(g, a.type, a.params || {}) || null }, status(g)); },
   load: a => load(a),
+  refuse: a => refuse(a),
   place: a => place(a),
   // online step: like step, but returns the server actions instead of continuing the game
   step_online: a => {
@@ -449,8 +508,19 @@ const handlers = {
   ki_turn: a => { kiTurnFull(game(a)); return status(game(a)); },
   state: a => ({ state: game(a).S }),
   status: a => status(game(a)),
+  fork: a => fork(a),
+  // victory progress of every seat by path (calibrate_phi.py)
+  progress: a => ({ progress: FEAT.progress(game(a).S) }),
   close: a => { games.delete(a.gid); return {}; },
 };
+if (PROF) {
+  for (const k in handlers) handlers[k] = timed('cmd.' + k, handlers[k]);
+  handlers.profile = () => {
+    const out = Object.assign({}, PROF);
+    for (const k in PROF) delete PROF[k];
+    return { profile: out };
+  };
+}
 function game(a) {
   const g = games.get(a.gid);
   if (!g) throw new Error('unknown game ' + a.gid);
