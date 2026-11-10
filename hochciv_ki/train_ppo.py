@@ -79,6 +79,19 @@ MIXES["v3"] = MIXES["v2"] + [
     (1, ["L", "S"]),
     (2, ["L", KI, KI, KI]),
 ]
+# vs4: beat a fixed network (--fixed, v4). V: the fixed network greedy (as it plays online),
+# W: the same network sampling. Half the games are against it, the rest keeps the v3 mix so
+# the learner does not forget KI schwer.
+MIXES["vs4"] = MIXES["v3"] + [
+    (8, ["L", "V"]),
+    (4, ["L", "W"]),
+    (3, ["L", "V", "V"]),
+    (3, ["L", "V", "V", "V"]),
+    (2, ["L", "V", KI, KI]),
+    (2, ["L", "W", "W", "W"]),
+    (1, ["L", "V", "V", "V", "V", "V"]),
+    (1, ["L", "V", KI, "V", KI, "V", KI, "V"]),
+]
 MAPS_V3 = {**MAPS_V2,
            "2": MAPS_V2["2"] + ["original", "customgen-marathon"],
            "3": MAPS_V2["3"] + ["customgen-marathon"],
@@ -87,7 +100,7 @@ MAPS_V3 = {**MAPS_V2,
 
 def game_options(rng, mix):
     """v2, v3: wonders in 40 % of the games, events in half of them (hard or easy)."""
-    if mix not in ("v2", "v3"):
+    if mix not in ("v2", "v3", "vs4"):
         return {}
     o = {"wonders": rng.random() < 0.4}
     ev = rng.random()
@@ -97,7 +110,7 @@ def game_options(rng, mix):
 
 
 def seat(s):
-    if s in ("L", "S"):
+    if s in ("L", "S", "V", "W"):
         return {"kind": "agent"}
     kind, _, lvl = s.partition(":")
     return {"kind": "ki", "kiLevel": lvl} if kind == "ki" else {"kind": "bot", "diff": lvl}
@@ -255,6 +268,11 @@ def main():
     ap.add_argument("--anchor-kl", type=float, default=0.0, help="weight of KL(start network || network) in the loss")
     ap.add_argument("--anchor-frac", type=float, default=0.0,
                     help="share of the snapshot seats played by the start network instead of a league snapshot")
+    ap.add_argument("--fixed", default=None, help="network for the V/W seats (mix vs4), e.g. checkpoints/v4x.pt")
+    ap.add_argument("--eval-vs", default=None,
+                    help="also evaluate head to head against this network; best.pt is then picked by that score")
+    ap.add_argument("--min-ki", type=float, default=0.0,
+                    help="with --eval-vs: a checkpoint can only become best.pt with this mean relative score against KI")
     args = ap.parse_args()
 
     device = "cuda"
@@ -270,6 +288,7 @@ def main():
     snap_net, _ = load_net(args.init if not st["league"] else st["league"][-1], device)
     learner_srv = InferenceServer(copy.deepcopy(net).eval(), device)
     snap_srv = InferenceServer(snap_net, device)
+    fixed_srv = InferenceServer(load_net(args.fixed, device)[0].eval(), device) if args.fixed else None
     ref = None
     if args.anchor_kl:
         ref = load_net(args.init, device)[0].eval()
@@ -289,7 +308,7 @@ def main():
 
     def make_job():
         seats = rng.choices([m[1] for m in mix], weights=[m[0] for m in mix])[0]
-        maps = {"v2": MAPS_V2, "v3": MAPS_V3}.get(args.mix, MAPS)[str(len(seats))]
+        maps = {"v2": MAPS_V2, "v3": MAPS_V3, "vs4": MAPS_V3}.get(args.mix, MAPS)[str(len(seats))]
         return {"seed": 50_000_000 + next(job_no), "seats": seats, "map": rng.choice(maps),
                 "opts": game_options(rng, args.mix)}
 
@@ -297,7 +316,7 @@ def main():
         print(f"engine {pool.version}, {pool.workers} workers, mix {args.mix}, start at iter {st['iter']}", flush=True)
 
         def play(b, j):
-            return collect(b, pool.dims, j, learner_srv, snap_srv, search)
+            return collect(b, pool.dims, j, learner_srv, snap_srv, search, fixed_srv)
 
         collector = Collector(pool, make_job, play) if args.continuous else None
         if collector:
@@ -346,12 +365,12 @@ def main():
             if it % args.eval_every == 0:
                 if collector:
                     collector.pause()
-                ev = evaluate(pool, net, device, args.eval_seeds, args.mix)
+                ev = evaluate(pool, net, device, args.eval_seeds, args.mix, args.eval_vs)
                 if collector:
                     collector.resume()
                 rec["eval"] = ev
                 print(json.dumps({"iter": it, "eval": ev}), flush=True)
-                if st["best"] is None or best_key(ev) > best_key(st["best"]):
+                if st["best"] is None or best_key(ev, args.min_ki) > best_key(st["best"], args.min_ki):
                     st["best"] = dict(ev, iter=it)
                     save_net(net, out / "best.pt", iter=it, eval=ev)
             st["history"].append(rec)
@@ -361,6 +380,8 @@ def main():
             collector.pause()
     learner_srv.close()
     snap_srv.close()
+    if fixed_srv:
+        fixed_srv.close()
 
 
 class Collector:
@@ -412,7 +433,7 @@ class Collector:
         return [self.done.get().result() for _ in range(n)]
 
 
-def collect(bridge, dims, job, learner, snap, search=None):
+def collect(bridge, dims, job, learner, snap, search=None, fixed=None):
     rng = random.Random(job["seed"])
     seats = job["seats"][:]
     rng.shuffle(seats)
@@ -425,6 +446,8 @@ def collect(bridge, dims, job, learner, snap, search=None):
             learner_slots.add(i)
         elif s == "S":
             agents[i] = ServerAgent(snap, seed=job["seed"] * 31 + i)
+        elif s in ("V", "W"):
+            agents[i] = ServerAgent(fixed, greedy=s == "V", seed=job["seed"] * 31 + i)
     r = play_game(bridge, dims, players, agents, seed=job["seed"], map_key=job["map"], record=True,
                   startPlayer=rng.randrange(len(players)), **job.get("opts", {}))
     recs = []
@@ -440,20 +463,29 @@ def collect(bridge, dims, job, learner, snap, search=None):
     return recs, {"vs_ki": vs_ki, "score": score, "steps": r.steps}
 
 
-def best_key(ev):
-    """v1 runs: the 1v1 score. v2 runs: the mean score relative to the fair share over the suite."""
+def best_key(ev, min_ki=0.0):
+    """v1 runs: the 1v1 score. v2 runs: the mean score relative to the fair share over the suite.
+    With a head-to-head eval: its mean relative score, if the KI score is at least min_ki."""
+    if "vs" in ev:
+        ki = sum(r["rel"] for r in ev["suite"]) / len(ev["suite"])
+        h2h = sum(r["rel"] for r in ev["vs"]) / len(ev["vs"])
+        return h2h if ki >= min_ki else h2h - 10
     if "suite" in ev:
         return sum(r["rel"] for r in ev["suite"]) / len(ev["suite"])
     return ev["2p"]["score"]
 
 
-def evaluate(pool, net, device, seeds, mix="all"):
+def evaluate(pool, net, device, seeds, mix="all", vs=None):
     from .model import NetAgent
     agent = NetAgent(copy.deepcopy(net).eval(), device, greedy=True)
-    if mix in ("v2", "v3"):
+    if mix in ("v2", "v3", "vs4"):
         from .eval_modes import run_suite
         # a quarter of the full suite, on its own seeds (the full suite is for final numbers)
-        return {"suite": run_suite(pool, lambda: agent, "v2", scale=seeds / 240, base_seed=30_000, progress=False)}
+        ev = {"suite": run_suite(pool, lambda: agent, "v2", scale=seeds / 240, base_seed=30_000, progress=False)}
+        if vs:
+            ev["vs"] = run_suite(pool, lambda: agent, "v2", scale=seeds / 240, base_seed=30_000,
+                                 opp=f"ckpt:{vs}", progress=False)
+        return ev
     res = {}
     res["2p"] = run_eval(pool, lambda: agent, "ki:schwer", 2, seeds, base_seed=10_000, progress=False)
     res["4p"] = run_eval(pool, lambda: agent, "ki:schwer", 4, max(5, seeds // 4), base_seed=20_000, progress=False)
