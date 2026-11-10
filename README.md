@@ -160,6 +160,15 @@ v106, v2 suite, `--base-seed 490000`, 798 games, checked with `hochciv_ki.promot
 | v4 with search (top 4) | 1.304, marathon 0.175 | 0.889, z = −2.9 | keep v4 |
 | ppo13 (from v4x, mix v3, `--anchor-kl 0.5 --anchor-frac 0.5`) | **1.605**, no mode worse | 0.926, z = −0.6 | keep v4 (h2h not significant) |
 
+| ppo14 (from ppo13, mix vs4, search) | collapsed in training (iteration 65: 0.81, 6p/8p/marathon 0) | – | stopped |
+| **ppo15 = v5** (from ppo13, mix vs4b, no search, `--lr 1.5e-5`) | **1.642**, no mode worse | **1.087, z = 1.65** | **promote** |
+
+ppo15 trains with about a quarter of the games against fixed v4x (`--fixed`, at most one v4 per
+game) and picks best.pt by head to head against v4x (`--eval-vs`, `--min-ki 1.38`, iteration
+90). ppo14 tried the same with half the games against v4, games full of v4 copies and search
+distillation (whose look-ahead models the opponents as KI schwer) and fell apart. ppo15 head to
+head against ppo13: 1.152. `checkpoints/v5.pt` = `checkpoints/ppo15/best.pt`.
+
 The search assumes the opponents play like KI schwer and loses to plain v4 offline and online.
 ppo13 beats KI schwer clearly more than v4 and ties v4 head to head; it runs as the second
 bot (NeuraNew) for a live comparison, v4 stays the production bot.
