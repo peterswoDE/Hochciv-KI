@@ -92,6 +92,14 @@ MIXES["vs4"] = MIXES["v3"] + [
     (1, ["L", "V", "V", "V", "V", "V"]),
     (1, ["L", "V", KI, "V", KI, "V", KI, "V"]),
 ]
+# vs4b: after ppo14 collapsed on vs4 (6p/8p/marathon down to 0 by iteration 65): no games full
+# of V seats, at most one V among KI schwer, and fewer V games overall
+MIXES["vs4b"] = MIXES["v3"] + [
+    (5, ["L", "V"]),
+    (2, ["L", "W"]),
+    (2, ["L", "V", KI]),
+    (2, ["L", "V", KI, KI]),
+]
 MAPS_V3 = {**MAPS_V2,
            "2": MAPS_V2["2"] + ["original", "customgen-marathon"],
            "3": MAPS_V2["3"] + ["customgen-marathon"],
@@ -100,7 +108,7 @@ MAPS_V3 = {**MAPS_V2,
 
 def game_options(rng, mix):
     """v2, v3: wonders in 40 % of the games, events in half of them (hard or easy)."""
-    if mix not in ("v2", "v3", "vs4"):
+    if mix not in ("v2", "v3", "vs4", "vs4b"):
         return {}
     o = {"wonders": rng.random() < 0.4}
     ev = rng.random()
@@ -308,7 +316,7 @@ def main():
 
     def make_job():
         seats = rng.choices([m[1] for m in mix], weights=[m[0] for m in mix])[0]
-        maps = {"v2": MAPS_V2, "v3": MAPS_V3, "vs4": MAPS_V3}.get(args.mix, MAPS)[str(len(seats))]
+        maps = {"v2": MAPS_V2, "v3": MAPS_V3, "vs4": MAPS_V3, "vs4b": MAPS_V3}.get(args.mix, MAPS)[str(len(seats))]
         return {"seed": 50_000_000 + next(job_no), "seats": seats, "map": rng.choice(maps),
                 "opts": game_options(rng, args.mix)}
 
@@ -478,7 +486,7 @@ def best_key(ev, min_ki=0.0):
 def evaluate(pool, net, device, seeds, mix="all", vs=None):
     from .model import NetAgent
     agent = NetAgent(copy.deepcopy(net).eval(), device, greedy=True)
-    if mix in ("v2", "v3", "vs4"):
+    if mix in ("v2", "v3", "vs4", "vs4b"):
         from .eval_modes import run_suite
         # a quarter of the full suite, on its own seeds (the full suite is for final numbers)
         ev = {"suite": run_suite(pool, lambda: agent, "v2", scale=seeds / 240, base_seed=30_000, progress=False)}
