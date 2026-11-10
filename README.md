@@ -145,6 +145,25 @@ it (`--base-seed 290000`, 798 games): against KI schwer 1.536 ± 0.145, head to 
 Training evals swung between 1.18 and 1.48 over the run, so iteration 20 is a high point, not a
 stable level.
 
+## Engine v106 (2026-11-09/10)
+
+v106 adds free claims (v103), the founding rule next to foreign claims (v104), copy ways
+(v105) and limits Greece's free techs (v101). The network gets six new inputs per seat for
+them (`claimsLeft`, three open copy ways, free techs left / available). `checkpoints/v4x.pt` is
+v4 widened to these inputs (new weights zero, same decisions as v4). All numbers below are on
+v106, v2 suite, `--base-seed 490000`, 798 games, checked with `hochciv_ki.promote`:
+
+| candidate | against KI schwer (mean relative) | head to head against v4 | gate |
+|---|---|---|---|
+| v4 | 1.431 | – | production |
+| ppo12 (v4 trained on v106, v2 mix) | 1.177, marathon 0.000 | 0.705, z = −6.2 | keep v4 |
+| v4 with search (top 4) | 1.304, marathon 0.175 | 0.889, z = −2.9 | keep v4 |
+| ppo13 (from v4x, mix v3, `--anchor-kl 0.5 --anchor-frac 0.5`) | **1.605**, no mode worse | 0.926, z = −0.6 | keep v4 (h2h not significant) |
+
+The search assumes the opponents play like KI schwer and loses to plain v4 offline and online.
+ppo13 beats KI schwer clearly more than v4 and ties v4 head to head; it runs as the second
+bot (NeuraNew) for a live comparison, v4 stays the production bot.
+
 ## v3 (production model from 2026-11-03 to 2026-11-06)
 
 `checkpoints/v3.pt` = run B' (`checkpoints/ppo4/best.pt`, iteration 80): PPO from v2 on the v2 mix
