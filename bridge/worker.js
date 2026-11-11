@@ -44,6 +44,19 @@ for (const f of FILES) {
 }
 const E = sandbox;
 const konst = name => vm.runInContext(`typeof ${name} !== 'undefined' ? ${name} : undefined`, sandbox);
+
+/* Seat-advantage study (hochciv_ki/seat_bonus.py): reset({startBonus: {coins: [0, a, b, c, …],
+   duel: d}}) replaces the engine's start bonus (START_BONUS_COINS / START_BONUS_DUEL) in that
+   game only. Same rule otherwise: first turn only, by place in the turn order, not for bots. */
+const engineStartBonus = sandbox.startBonus;
+if (engineStartBonus) sandbox.startBonus = function (S, pi) {
+  const tb = S.testBonus;
+  if (!tb) return engineStartBonus(S, pi);
+  const p = S.players[pi];
+  if (S.round !== 1 || p.kind === 'bot' || p.kind === 'barbar') return 0;
+  const n = konst('empireCount')(S), platz = konst('turnPosition')(S, pi);
+  return n === 2 ? (platz === 1 ? tb.duel || 0 : 0) : (tb.coins[platz] || 0);
+};
 const VERSION = konst('APP_VERSION');
 const CIVS = konst('CIVS');
 const CIV_BY_KEY = Object.fromEntries(CIVS.map(c => [c.k, c]));
@@ -188,6 +201,7 @@ function reset(a) {
     if (!cfg.map) throw new Error('custom map has too few start points');
   }
   const S = E.newGame(cfg);
+  if (a.startBonus) S.testBonus = a.startBonus;    // study only, see engineStartBonus
   // newGame sorts into turn order and keeps the seat as `slot`
   const agents = new Set(S.players.map((p, i) => [p, i]).filter(([p]) => p.kind === 'human').map(([, i]) => i));
   /* newGame keeps kiLevel only for KI seats. Agent seats need it too: the KI context (threat,
