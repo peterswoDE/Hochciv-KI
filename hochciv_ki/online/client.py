@@ -122,6 +122,24 @@ def event_mode(cfg: dict) -> str:
     return (cfg.get("eventMode") or "hard") if cfg.get("events") else "off"
 
 
+def winners_of(over: dict | None, S: dict | None, me) -> dict | None:
+    """Who won a finished game: the engine's S.over names the winning seats (indexes into
+    S.players, as yourIndex). Humans and player-bots keep their name in the state, KI seats
+    show their nation. None if the game didn't end with a result (left, kicked)."""
+    over = over or {}
+    ws = over.get("winners") or ([over["winner"]] if over.get("winner") is not None else [])
+    if not ws:
+        return None
+    pl = (S or {}).get("players") or []
+
+    def name(i):
+        if not 0 <= i < len(pl):
+            return f"seat {i + 1}"
+        p = pl[i]
+        return p.get("name") or ("KI " + str(p.get("civ") or "").capitalize()).strip()
+    return {"winners": [name(i) for i in ws], "won": me in ws, "shared": len(ws) > 1}
+
+
 def mode_label(cfg: dict) -> str:
     """Short text of the game options for the panel."""
     bits = []
@@ -657,6 +675,7 @@ class LiveGame(Conn):
         self.join_code = (lobby or {}).get("joinCode") or (match or {}).get("joinCode")
         self.phase = "connecting"    # lobby, placement, playing, over, left, failed
         self.note = ""
+        self.result = None           # after game:over: {winners, won, shared} (winners_of)
         self.since = time.time()
         self.last_start_try = self.last_ping = 0.0
         self.connected = False       # the first connect event is the initial connection
@@ -679,7 +698,7 @@ class LiveGame(Conn):
                 "ranked": bool(cfg.get("ranked")), "mode": mode_label(cfg),
                 "players": [p.get("name") for p in (g.get("players") or [])], "round": S.get("round"),
                 "myTurn": bool(S) and not S.get("over") and S.get("cur") == g.get("yourIndex"),
-                "since": self.since}
+                "result": self.result, "since": self.since}
 
     def leave(self, why=""):
         """Leave the game (in a running game the server lets the KI take over the seat)."""
@@ -820,6 +839,11 @@ class LiveGame(Conn):
         elif ev in ("game:over", "session:kicked"):
             why = (data or {}).get("how") or (data or {}).get("reason") or ev
             self.log.info("game ended: %s", why)
+            if ev == "game:over" and self.g:
+                self.result = winners_of(data, self.g.get("state"), self.g.get("yourIndex"))
+                if self.result:
+                    self.log.info("winner: %s (%s)", " and ".join(self.result["winners"]),
+                                  "won" if self.result["won"] else "lost")
             self.drop("over" if ev == "game:over" else "left", why)
         elif ev == "connect" and not self.connected:
             self.connected = True

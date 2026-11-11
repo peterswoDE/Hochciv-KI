@@ -416,6 +416,16 @@ def test_logs_name_the_game():
         logger.removeHandler(lines)
 
 
+def test_the_winner_is_shown():
+    from hochciv_ki.online.client import winners_of
+    S = {"players": [{"name": "NeuraBot", "civ": "rom"}, {"name": "NeuraNew", "civ": "england"},
+                     {"name": None, "civ": "russland", "kind": "ki"}]}
+    assert winners_of({"winner": 1, "winners": [1], "how": "x"}, S, 1) ==         {"winners": ["NeuraNew"], "won": True, "shared": False}
+    r = winners_of({"winner": 0, "winners": [0, 2]}, S, 1)
+    assert r == {"winners": ["NeuraBot", "KI Russland"], "won": False, "shared": True}
+    assert winners_of({"reason": "kicked"}, S, 1) is None
+
+
 def main():
     logging.disable(logging.CRITICAL)
     tests = [(k, v) for k, v in globals().items() if k.startswith("test_")]

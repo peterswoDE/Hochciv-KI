@@ -45,6 +45,9 @@ td.r, th.r { text-align: right; }
 .ph.lobby, .ph.connecting, .ph.setup { color: var(--warn); }
 .ph.failed { color: var(--bad); }
 .turn { color: var(--ok); font-weight: 600; }
+.res { font-weight: 600; }
+.res.won { color: var(--ok); }
+.res.lost { color: var(--bad); }
 .tabs { display: flex; gap: 6px; margin-bottom: 8px; }
 .tabs button.on { border-color: var(--accent); color: var(--accent); }
 pre.log { margin: 0; max-height: 260px; overflow: auto; font: 12px/1.5 ui-monospace, Consolas, monospace; color: var(--muted); white-space: pre-wrap; }
@@ -108,7 +111,7 @@ textarea { width: 100%; min-height: 54px; resize: vertical; }
 <div class="layout">
   <div class="col">
     <section class="card">
-      <h2>Running games <span class="spacer"></span><span class="note" id="note"></span></h2>
+      <h2>Running games <span class="spacer"></span><span class="note" id="tally"></span> <span class="note" id="note"></span></h2>
       <div class="scroll"><table id="live"></table></div>
       <div class="scroll" style="margin-top:10px"><table id="mine"></table></div>
     </section>
@@ -312,15 +315,25 @@ function renderChips() {
   chip("st-match", st.match, st.match ? (S.queued ? "matchmaking: in queue" : "matchmaking on") : "matchmaking off");
 }
 
+function resultLine(r) {
+  if (!r) return "";
+  return ` <span class="res ${r.won ? "won" : "lost"}">${r.won ? (r.shared ? "won (shared)" : "won") : "lost"}</span>` +
+    `<div class="why">🏆 ${esc(r.winners.join(" and "))}</div>`;
+}
+
 function renderRunning() {
   const live = S.live;
+  const done = live.filter(g => g.result);
+  $("tally").textContent = done.length
+    ? `Last ${done.length} finished: ${done.filter(g => g.result.won).length} won, ${done.filter(g => !g.result.won).length} lost`
+    : "";
   $("live").innerHTML = live.length ? `<tr><th>Live game</th><th>Map</th><th>Players</th><th>Status</th><th class="r">Round</th><th></th></tr>` +
     live.map(g => {
       const how = { host: "hosted", join: g.picked ? "picked" : "joined", match: "matchmaking" }[g.kind];
       const active = !["over", "left", "failed"].includes(g.phase);
       return `<tr><td>${esc(g.joinCode || g.id)} <span class="why">${how}</span></td><td>${esc(mapName(g.mapKey))}${g.empires ? ` · ${g.empires}` : ""}${g.ranked ? " 🔥" : ""}${modeLine(g)}</td>
         <td>${esc(g.players.join(", "))}</td>
-        <td><span class="ph ${esc(g.phase)}">${esc(g.phase)}</span> ${g.myTurn ? '<span class="turn">its turn</span>' : ""}<div class="why">${esc(g.note)}</div></td>
+        <td><span class="ph ${esc(g.phase)}">${esc(g.phase)}</span> ${g.myTurn ? '<span class="turn">its turn</span>' : ""}${resultLine(g.result)}<div class="why">${esc(g.note)}</div></td>
         <td class="r">${g.round ?? ""}</td>
         <td class="r">${active ? `<button class="small" data-leave="live" data-id="${esc(g.id)}" data-running="${g.phase !== "lobby" && g.phase !== "connecting"}">Leave</button>` : ""}</td></tr>`;
     }).join("") : `<tr><td class="empty">No live games.</td></tr>`;
