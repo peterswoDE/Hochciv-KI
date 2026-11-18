@@ -1,6 +1,9 @@
 """Evaluate an agent against KI schwer over a suite of game modes (v2: wonders, events, marathon,
 5–8 empires, next to the v1 modes). Score = share of wins, fair share 1/n.
 
+Suite "rush" plays against the scripted slavery rusher (bridge/rush.js) instead, in the modes
+it is seen in online (duels, 3 empires), partly next to KI schwer; --opp does not apply there.
+
     python -m hochciv_ki.eval_modes --agent ckpt:checkpoints/v1w.pt --suite v2 --scale 1
 """
 from __future__ import annotations
@@ -15,7 +18,7 @@ HE = {"events": True, "eventMode": "hard"}
 EE = {"events": True, "eventMode": "easy"}
 WO = {"wonders": True}
 
-# (players, map, options, seeds at scale 1)
+# (players, map, options, seeds at scale 1[, opponents – default: --opp])
 SUITES = {
     "v1": [
         (2, "plaettchen", {}, 60),
@@ -35,6 +38,14 @@ SUITES = {
         (2, "plaettchen", {}, 60),
         (4, "customgen", {}, 15),
     ],
+    # the early slavery rush that beats v4 online (sealgo, SeymourBot): gate check since ppo16
+    "rush": [
+        (2, "plaettchen", {}, 60, "rush"),
+        (2, "plaettchen", WO, 40, "rush"),
+        (2, "plaettchen", HE, 40, "rush"),
+        (3, "plaettchen", WO, 20, "rush,ki:schwer"),
+        (4, "plaettchen", {}, 10, "rush,ki:schwer"),
+    ],
     # hex tiles (v100) on their own, so that v2 stays comparable with earlier runs
     "hex": [
         (2, "plaettchen-hex", WO, 40),
@@ -46,12 +57,20 @@ SUITES = {
 }
 
 
+def core_mode(name):
+    """The modes training and gate focus on since ppo18: 2 to 4 empires on normal maps (no
+    marathon). The others are still evaluated, as a guard against collapse."""
+    return int(name.split("p", 1)[0]) <= 4 and "marathon" not in name
+
+
 def run_suite(pool, make_agent, suite, scale=1.0, base_seed=90_000, opp="ki:schwer", progress=True):
     out = []
-    for k, (n, m, opts, seeds) in enumerate(SUITES[suite]):
-        r = run_eval(pool, make_agent, opp, n, max(1, round(seeds * scale)), base_seed + 1000 * k, m,
+    for k, (n, m, opts, seeds, *mode_opp) in enumerate(SUITES[suite]):
+        o = mode_opp[0] if mode_opp else opp
+        r = run_eval(pool, make_agent, o, n, max(1, round(seeds * scale)), base_seed + 1000 * k, m,
                      progress=progress, opts=opts)
-        out.append({"mode": mode_name(n, m, opts), "score": round(r["score"], 4), "ci95": round(r["ci95"], 4),
+        name = mode_name(n, m, opts) + (f" vs {o}" if mode_opp else "")
+        out.append({"mode": name, "score": round(r["score"], 4), "ci95": round(r["ci95"], 4),
                     "fair": round(r["fair"], 4), "games": r["games"], "rel": round(r["score"] / r["fair"], 3)})
     return out
 

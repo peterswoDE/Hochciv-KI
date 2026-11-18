@@ -16,6 +16,12 @@ changes with the branch checked out there, so long runs use a frozen copy (`git 
 `runs\engines\<version>`). The online bot needs no setting: it plays on the engine the server
 runs (see *Playing online*).
 
+## Models
+
+The models are in the repository through Git LFS (`git lfs install` before cloning): the
+releases `checkpoints/v*.pt` and the `best.pt` of every training run. Snapshots, `latest.pt`
+and the run state stay local.
+
 ## Selftest
 
 ```
@@ -29,6 +35,7 @@ Plays complete games with a random agent against the JS KI and bots on tile, fix
 | Path | What |
 |---|---|
 | `bridge/worker.js` | Node worker: loads the engine, runs games, JSON lines over stdin/stdout |
+| `bridge/rush.js` | Scripted slavery rusher (seat kind `rush`, opponent `rush`): training opponent and gate check |
 | `hochciv_ki/bridge.py` | Python client for the worker |
 | `bridge/features.js` | Observation features, candidate evaluation on copies, teacher label (one kiPlan step) |
 | `hochciv_ki/env.py` | Observations as numpy arrays, agents, `play_game` |
@@ -172,6 +179,28 @@ head against ppo13: 1.152. `checkpoints/v5.pt` = `checkpoints/ppo15/best.pt`.
 The search assumes the opponents play like KI schwer and loses to plain v4 offline and online.
 ppo13 beats KI schwer clearly more than v4 and ties v4 head to head; it runs as the second
 bot (NeuraNew) for a live comparison, v4 stays the production bot.
+
+## The rusher (engine v107, 2026-11-16)
+
+Online, v4 loses most games against people and bots who open with slavery: research it in round
+1, grow every city and sacrifice the new population (+7 coins each), buy cheap military techs
+and stand armies next to the capital in round 2 – a two-turn siege takes it in round 3 to 5. Our
+networks never sacrifice and field their first army in round 4: neither KI schwer nor self-play
+ever shows this plan. `bridge/rush.js` scripts it (seat kind `rush`; opponent `rush` in `eval`,
+the `rush` suite in `eval_modes`, rule 4 of `promote`, mix `rush` in `train_ppo`). The rest of
+its turn (founding, research, defense) is the KI planner. It beats KI schwer about 13 to 3 in
+duels (`python -m tests.test_rush`).
+
+Rush suite, `--base-seed 490000`, 380 games (mean relative score, 1.0 = fair share):
+
+| agent | 2p | 2p wonders | 2p events hard | 3p (+ KI) | 4p (+ 2 KI) | mean relative |
+|---|---|---|---|---|---|---|
+| KI schwer | 0.367 | 0.562 | 0.388 | 0.333 | 0.150 | 0.847 |
+| v4 | 0.417 | 0.525 | 0.425 | 0.417 | 0.150 | 0.917 |
+| v5 | 0.450 | 0.613 | 0.375 | 0.417 | 0.150 | 0.945 |
+
+Against KI schwer v4 and v5 reach 1.43 and 1.64; against the rusher both are below the fair
+share. ppo16 (`runs/queue11.sh`) trains v5 on v107 with a quarter of the games against it.
 
 ## v3 (production model from 2026-11-03 to 2026-11-06)
 

@@ -13,6 +13,7 @@ from .bridge import Bridge
 SETUPS = [
     ("1v1 tile map vs KI", "plaettchen", [{"kind": "agent"}, {"kind": "ki", "kiLevel": "leicht"}]),
     ("1v1 original map vs bot", "original", [{"kind": "agent"}, {"kind": "bot"}]),
+    ("1v1 tile map vs rusher", "plaettchen", [{"kind": "agent"}, {"kind": "rush"}]),
     ("4p tile map", "plaettchen", [{"kind": "agent"}, {"kind": "ki", "kiLevel": "leicht"}, {"kind": "bot"}, {"kind": "bot"}]),
     ("3p custom map", "customgen", [{"kind": "agent"}, {"kind": "bot"}, {"kind": "bot"}]),
     ("3p hex tiles", "plaettchen-hex", [{"kind": "agent"}, {"kind": "ki", "kiLevel": "leicht"}, {"kind": "bot"}]),

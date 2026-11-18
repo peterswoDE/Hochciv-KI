@@ -25,10 +25,12 @@ from .pool import BridgePool
 
 
 def opp_seat(spec: str):
-    """'ki:schwer', 'ki:mittel', 'ki:leicht', 'bot:prinz', 'bot:koenig', ...; a network
-    ('ckpt:…', 'ckpts:…') is an agent seat."""
+    """'ki:schwer', 'ki:mittel', 'ki:leicht', 'bot:prinz', 'bot:koenig', 'rush' (the scripted
+    slavery rusher, bridge/rush.js), ...; a network ('ckpt:…', 'ckpts:…') is an agent seat."""
     if is_net(spec):
         return {"kind": "agent"}
+    if spec == "rush":
+        return {"kind": "rush"}
     kind, _, lvl = spec.partition(":")
     if kind == "ki":
         return {"kind": "ki", "kiLevel": lvl or "schwer"}

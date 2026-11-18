@@ -2,7 +2,13 @@ __pycache__/
 *.pyc
 .venv/
 runs/
-checkpoints/
+# models (Git LFS, .gitattributes): the releases and each run's best.pt, not the snapshots
+checkpoints/*
+!checkpoints/*.pt
+!checkpoints/*/
+checkpoints/*/*
+!checkpoints/*/best.pt
+*.err
 data/
 *.txt
 !requirements*.txt

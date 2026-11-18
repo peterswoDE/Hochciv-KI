@@ -13,6 +13,7 @@ resumed (--resume).
 from __future__ import annotations
 
 import argparse
+import gc
 import copy
 import itertools
 import json
@@ -100,15 +101,71 @@ MIXES["vs4b"] = MIXES["v3"] + [
     (2, ["L", "V", KI]),
     (2, ["L", "V", KI, KI]),
 ]
+# rush: the v3 mix plus a quarter of the games against the scripted slavery rusher
+# (bridge/rush.js), the early capital rush that beats v4 online and that neither KI schwer nor
+# self-play ever shows
+R = "rush"
+MIXES["rush"] = MIXES["v3"] + [
+    (4, ["L", R]),
+    (1, ["L", "S", R]),
+    (2, ["L", R, KI]),
+    (1, ["L", R, KI, KI]),
+]
+# rush2 (ppo17): half of the games against the rusher – ppo16 with a quarter learned nothing
+# against it (rush suite 0.942, v5 0.945)
+MIXES["rush2"] = MIXES["v3"] + [
+    (12, ["L", R]),
+    (3, ["L", "S", R]),
+    (5, ["L", R, KI]),
+    (3, ["L", R, KI, KI]),
+]
+# core (ppo18): rush2 with only 2 to 4 empires, on normal maps only (MAPS_CORE, no marathon):
+# the modes people play and the ones that are still far from optimized. 5-8 empires and
+# marathon stay in the evaluation suite only as a guard against collapse (core_mode).
+MIXES["core"] = [m for m in MIXES["rush2"] if len(m[1]) <= 4]
+# exploit: an exploiter network learns to beat one fixed network (--fixed, the V/W seats) and
+# nothing else (AlphaStar's main exploiter); 2 to 4 empires on normal maps
+MIXES["exploit"] = [
+    (6, ["L", "V"]),
+    (2, ["L", "W"]),
+    (2, ["L", "V", "V"]),
+    (2, ["L", "V", KI]),
+    (1, ["L", "V", "V", "V"]),
+    (1, ["L", "V", KI, KI]),
+]
+# league: the core mix plus games against an exploiter of the start network (--fixed), so the
+# learner has to close the holes the exploiter found
+MIXES["league"] = MIXES["core"] + [
+    (6, ["L", "V"]),
+    (2, ["L", "W"]),
+    (2, ["L", "V", KI]),
+    (2, ["L", "V", KI, KI]),
+]
+# core34 (ppo22): ppo19 and ppo21 beat v5 1 on 1 but not with 3 or 4 empires, and the rusher
+# still wins 4 empire games. Same seats as core, with 3 and 4 empires weighing about 3/4 of the
+# games (core: 46 %) and more of them against snapshots, the way the gate plays them.
+MIXES["core34"] = [(w // 2 if len(s) == 2 else w, s) for w, s in MIXES["core"]] + [
+    (3, ["L", "S", "S"]),
+    (2, ["L", "S", KI]),
+    (3, ["L", "S", "S", "S"]),
+    (2, ["L", "S", KI, KI]),
+    (2, ["L", R, "S", KI]),
+    (2, ["L", R, "S", "S"]),
+]
+# mixes with the v2 game options, maps and evaluation suite
+SUITE_MIXES = ("v2", "v3", "vs4", "vs4b", "rush", "rush2", "core", "exploit", "league", "core34")
+RUSH_MIXES = ("rush", "rush2", "core", "league", "core34")
+CORE_MIXES = ("core", "exploit", "league", "core34")       # best.pt by the core modes only (core_mode)
 MAPS_V3 = {**MAPS_V2,
            "2": MAPS_V2["2"] + ["original", "customgen-marathon"],
            "3": MAPS_V2["3"] + ["customgen-marathon"],
            "4": MAPS_V2["4"] + ["marathon", "marathon", "customgen-marathon"]}
+MAPS_CORE = {n: [m for m in MAPS_V3[n] if "marathon" not in m] for n in ("2", "3", "4")}
 
 
 def game_options(rng, mix):
     """v2, v3: wonders in 40 % of the games, events in half of them (hard or easy)."""
-    if mix not in ("v2", "v3", "vs4", "vs4b"):
+    if mix not in SUITE_MIXES:
         return {}
     o = {"wonders": rng.random() < 0.4}
     ev = rng.random()
@@ -120,6 +177,8 @@ def game_options(rng, mix):
 def seat(s):
     if s in ("L", "S", "V", "W"):
         return {"kind": "agent"}
+    if s == R:
+        return {"kind": "rush"}
     kind, _, lvl = s.partition(":")
     return {"kind": "ki", "kiLevel": lvl} if kind == "ki" else {"kind": "bot", "diff": lvl}
 
@@ -179,7 +238,8 @@ class PPO:
         self.opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4)
 
     def update(self, batch, epochs, mb, device, imit):
-        """batch: list of (sample, a, logp_old, adv, ret, teacher)."""
+        """batch: list of (sample, a, logp_old, adv, ret, teacher, weight). The weight scales the
+        policy and value loss of the sample (balance_weights); 1 everywhere is plain PPO."""
         # the network has no batch-dependent layers (ChannelNorm, no dropout): train and eval
         # mode compute the same, so the probability ratio starts at 1
         self.net.train()
@@ -204,13 +264,15 @@ class PPO:
                 A = torch.tensor(adv[b], device=device)
                 R = torch.tensor([batch[i][4] for i in b], device=device, dtype=torch.float32)
                 T = torch.tensor([batch[i][5] for i in b], device=device)
+                W = torch.tensor([batch[i][6] for i in b], device=device, dtype=torch.float32)
+                W = W / W.sum()
                 with torch.autocast("cuda", dtype=torch.bfloat16):
                     logits, v = self.net(grid, glob, cand, pos, mask)
                 logp_all = torch.log_softmax(logits.float(), -1)
                 lp = logp_all.gather(1, a[:, None]).squeeze(1)
                 ratio = torch.exp(lp - lp_old)
-                pl = -torch.min(ratio * A, ratio.clamp(1 - self.clip, 1 + self.clip) * A).mean()
-                vl = F.mse_loss(torch.sigmoid(v.float()), R)
+                pl = -(W * torch.min(ratio * A, ratio.clamp(1 - self.clip, 1 + self.clip) * A)).sum()
+                vl = (W * (torch.sigmoid(v.float()) - R) ** 2).sum()
                 p_all = logp_all.exp()
                 ent = -(p_all * logp_all.masked_fill(~mask, 0)).sum(-1).mean()
                 il = F.nll_loss(logp_all.masked_fill(~mask, -1e9), T)
@@ -246,6 +308,61 @@ class PPO:
         return {**{k: v / n for k, v in stats.items()}, **extra}
 
 
+PFSP_RATE = 0.05     # per game: how fast a matchup's running relative score follows new results
+
+
+def pfsp_factor(rel):
+    """Prioritized fictitious self-play (AlphaStar), on the relative score (score / fair share)
+    of the learner in a matchup: 1 at the fair share, up to 2 for a matchup it always loses,
+    down to 0.25 for one it wins easily, so the games go where the learner loses."""
+    return min(2.0, max(0.25, 2.0 - rel))
+
+
+def pfsp_note(table, key, rel):
+    """Running relative score of a matchup (starts at the fair share, 1)."""
+    old = table.get(key, 1.0)
+    table[key] = old + PFSP_RATE * (rel - old)
+
+
+def balance_weights(results):
+    """Per game: the loss weight of its samples. Rush games end around round 5 and give far fewer
+    samples than a normal game, so half of the games are only a small part of the samples. Each
+    group (with or without the rusher) gets the weight its share of the games asks for; the
+    mean weight over all samples stays 1."""
+    n = {True: 0, False: 0}
+    g = {True: 0, False: 0}
+    for recs, info in results:
+        k = bool(info.get("rush"))
+        g[k] += 1
+        n[k] += sum(len(rec) for rec, _ in recs)
+    G, N = g[True] + g[False], n[True] + n[False]
+    if not (n[True] and n[False]):
+        return {True: 1.0, False: 1.0}
+    return {k: (g[k] / G) / (n[k] / N) for k in (True, False)}
+
+
+def gpu_mem():
+    """GPU memory of this process after the update, in GB: allocated now, reserved by the caching
+    allocator (before release_gpu), and the peak allocation of the iteration. Then the cache goes
+    back to the driver and the peak counter starts over."""
+    out = {"gpu_alloc_gb": round(torch.cuda.memory_allocated() / 2**30, 2),
+           "gpu_reserved_gb": round(torch.cuda.memory_reserved() / 2**30, 2),
+           "gpu_peak_gb": round(torch.cuda.max_memory_allocated() / 2**30, 2)}
+    release_gpu()
+    torch.cuda.reset_peak_memory_stats()
+    return out
+
+
+def release_gpu():
+    """Hand the allocator's unused cache back to the driver. Batches change shape with every map
+    size, so the cache otherwise keeps growing blocks it rarely reuses; on Windows (WDDM) a full
+    card then spills into shared system memory as soon as anything else (a game) needs VRAM,
+    and the update stays several times slower even after that program is gone (ppo16: 45 s per
+    update before, 130-750 s after a game ran next to it)."""
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--init", default="checkpoints/bc/best.pt")
@@ -276,6 +393,10 @@ def main():
     ap.add_argument("--anchor-kl", type=float, default=0.0, help="weight of KL(start network || network) in the loss")
     ap.add_argument("--anchor-frac", type=float, default=0.0,
                     help="share of the snapshot seats played by the start network instead of a league snapshot")
+    ap.add_argument("--pfsp", action="store_true",
+                    help="weight the mix entries and the snapshot choice by how badly the learner does (pfsp_factor)")
+    ap.add_argument("--rush-balance", action="store_true",
+                    help="weight the samples so rush games count as much as their share of the games (balance_weights)")
     ap.add_argument("--fixed", default=None, help="network for the V/W seats (mix vs4), e.g. checkpoints/v4x.pt")
     ap.add_argument("--eval-vs", default=None,
                     help="also evaluate head to head against this network; best.pt is then picked by that score")
@@ -314,11 +435,24 @@ def main():
     job_no = itertools.count(st["iter"] * 1000)
     search = {"frac": args.search_frac, "k": args.search_k, "tau": args.search_tau} if args.search_frac else None
 
+    st.setdefault("pfsp_mix", {})
+    st.setdefault("pfsp_snap", {})
+    st.setdefault("snap_cur", args.init if not st["league"] else st["league"][-1])
+
+    def mix_weights():
+        if not args.pfsp:
+            return [m[0] for m in mix]
+        return [m[0] * pfsp_factor(st["pfsp_mix"].get(str(k), 1.0)) for k, m in enumerate(mix)]
+
+    weights = mix_weights()
+
     def make_job():
-        seats = rng.choices([m[1] for m in mix], weights=[m[0] for m in mix])[0]
-        maps = {"v2": MAPS_V2, "v3": MAPS_V3, "vs4": MAPS_V3, "vs4b": MAPS_V3}.get(args.mix, MAPS)[str(len(seats))]
+        k = rng.choices(range(len(mix)), weights=weights)[0]
+        seats = mix[k][1]
+        maps = {"v2": MAPS_V2, "v3": MAPS_V3, "vs4": MAPS_V3, "vs4b": MAPS_V3, "rush": MAPS_V3, "rush2": MAPS_V3,
+                "core": MAPS_CORE, "exploit": MAPS_CORE, "league": MAPS_CORE, "core34": MAPS_CORE}.get(args.mix, MAPS)[str(len(seats))]
         return {"seed": 50_000_000 + next(job_no), "seats": seats, "map": rng.choice(maps),
-                "opts": game_options(rng, args.mix)}
+                "opts": game_options(rng, args.mix), "entry": k}
 
     with BridgePool(**kw) as pool:
         print(f"engine {pool.version}, {pool.workers} workers, mix {args.mix}, start at iter {st['iter']}", flush=True)
@@ -338,42 +472,67 @@ def main():
                 jobs = [make_job() for _ in range(args.games)]
                 results = pool.map(play, jobs)
             batch, wins, games_vs_ki, steps, shaped, searched = [], 0.0, 0, 0, [], []
+            rush_wins, games_vs_rush = 0.0, 0
+            bal = balance_weights(results) if args.rush_balance else {True: 1.0, False: 1.0}
             for recs, info in results:
+                w = bal[bool(info.get("rush"))]
+                if args.pfsp and info.get("rel") is not None:
+                    pfsp_note(st["pfsp_mix"], str(info["entry"]), info["rel"])
+                    if info.get("snap"):
+                        pfsp_note(st["pfsp_snap"], st["snap_cur"], info["rel"])
                 for rec, z in recs:
                     adv, ret = gae(rec, z, args.lam, args.shape, args.shape_slope)
                     if args.shape:
                         shaped.append(float((adv - gae(rec, z, args.lam)[0]).std()))
                     for k, (sample, a, logp, v, teacher, *rest) in enumerate(rec):
-                        batch.append((sample, a, logp, adv[k], ret[k], teacher))
+                        batch.append((sample, a, logp, adv[k], ret[k], teacher, w))
                         if rest[-2] is not None:
                             searched.append((sample, rest[-2], rest[-1]))
                 if info["vs_ki"]:
                     games_vs_ki += 1
                     wins += info["score"]
+                if info.get("vs_rush"):
+                    games_vs_rush += 1
+                    rush_wins += info["score"]
                 steps += info["steps"]
             t1 = time.perf_counter()
+            weights[:] = mix_weights()
             imit = args.imit * 0.5 ** (it / args.imit_half)
             stats = ppo.update(batch, args.epochs, args.mb, device, imit)
             if search:
                 stats.update(search_phase(net, ppo.opt, searched, device, args.mb, args.search_epochs, args.search_kl))
             learner_srv.load_state(net.state_dict())
             t2 = time.perf_counter()
+            mem = gpu_mem()
             st["iter"] = it
             rec = {"iter": it, "samples": len(batch), "train_score_vs_ki": wins / max(1, games_vs_ki),
+                   **({"train_score_vs_rush": round(rush_wins / games_vs_rush, 4)} if games_vs_rush else {}),
                    "collect_s": round(t1 - t0), "update_s": round(t2 - t1), "imit_w": imit,
-                   **({"shape_std": round(float(np.mean(shaped)), 4)} if shaped else {}),
+                   **({"shape_std": round(float(np.mean(shaped)), 4)} if shaped else {}), **mem,
+                   **({"rush_w": round(bal[True], 2)} if args.rush_balance else {}),
+                   **({"pfsp": [round(pfsp_factor(st["pfsp_mix"].get(str(k), 1.0)), 2) for k in range(len(mix))]}
+                      if args.pfsp else {}),
                    **{k: (round(v, 4) if isinstance(v, float) else v) for k, v in stats.items()}}
             print(json.dumps(rec), flush=True)
             if it % args.snap_every == 0:
                 p = out / f"snap_{it:05d}.pt"
                 save_net(net, p, iter=it)
                 st["league"] = (st["league"] + [str(p)])[-8:]
-                pick = args.init if rng.random() < args.anchor_frac else rng.choice(st["league"])
+                if rng.random() < args.anchor_frac:
+                    pick = args.init
+                elif args.pfsp:     # the snapshots the learner does worst against come back more often
+                    pick = rng.choices(st["league"], weights=[pfsp_factor(st["pfsp_snap"].get(q, 1.0))
+                                                               for q in st["league"]])[0]
+                else:
+                    pick = rng.choice(st["league"])
                 snap_srv.load_state(load_net(pick, device)[0].state_dict())
+                st["snap_cur"] = pick
+                release_gpu()
             if it % args.eval_every == 0:
                 if collector:
                     collector.pause()
                 ev = evaluate(pool, net, device, args.eval_seeds, args.mix, args.eval_vs)
+                release_gpu()
                 if collector:
                     collector.resume()
                 rec["eval"] = ev
@@ -467,32 +626,55 @@ def collect(bridge, dims, job, learner, snap, search=None, fixed=None):
                        e.get("target"), e.get("p"))
                       for obs, a, e in r.trajectories[pi]], z))
     vs_ki = all(s == "L" or s.startswith("ki") for s in seats) and seats.count("L") == 1
-    score = r.score(learner_pis[0]) if (vs_ki and learner_pis) else 0.0
-    return recs, {"vs_ki": vs_ki, "score": score, "steps": r.steps}
+    vs_rush = list(seats) == ["L", R]
+    score = r.score(learner_pis[0]) if ((vs_ki or vs_rush) and learner_pis) else 0.0
+    # the learner's relative score (score / fair share) over its seats, for PFSP
+    rel = (sum(r.score(pi) for pi in learner_pis) / len(learner_pis) * len(players)
+           if (learner_pis and r.over) else None)
+    return recs, {"vs_ki": vs_ki, "vs_rush": vs_rush, "score": score, "steps": r.steps,
+                  "entry": job.get("entry"), "rel": rel, "rush": R in seats, "snap": "S" in seats}
 
 
 def best_key(ev, min_ki=0.0):
     """v1 runs: the 1v1 score. v2 runs: the mean score relative to the fair share over the suite.
-    With a head-to-head eval: its mean relative score, if the KI score is at least min_ki."""
+    With a head-to-head eval: its mean relative score, if the KI score is at least min_ki.
+    Mix rush: the rush suite weighs as much as the other one (KI schwer, or head to head).
+    Mix core: only the core modes (2 to 4 empires, no marathon) count."""
+    from .eval_modes import core_mode
+
+    def mean(res):
+        if ev.get("focus") == "core":
+            res = [r for r in res if core_mode(r["mode"])]
+        return sum(r["rel"] for r in res) / len(res)
+
     if "vs" in ev:
-        ki = sum(r["rel"] for r in ev["suite"]) / len(ev["suite"])
-        h2h = sum(r["rel"] for r in ev["vs"]) / len(ev["vs"])
+        ki = mean(ev["suite"])
+        h2h = mean(ev["vs"])
+        if "rush" in ev:
+            h2h = (h2h + sum(r["rel"] for r in ev["rush"]) / len(ev["rush"])) / 2
         return h2h if ki >= min_ki else h2h - 10
     if "suite" in ev:
-        return sum(r["rel"] for r in ev["suite"]) / len(ev["suite"])
+        ki = mean(ev["suite"])
+        if "rush" in ev:        # mix rush: as much weight on the rusher as on KI schwer
+            return (ki + sum(r["rel"] for r in ev["rush"]) / len(ev["rush"])) / 2
+        return ki
     return ev["2p"]["score"]
 
 
 def evaluate(pool, net, device, seeds, mix="all", vs=None):
     from .model import NetAgent
     agent = NetAgent(copy.deepcopy(net).eval(), device, greedy=True)
-    if mix in ("v2", "v3", "vs4", "vs4b"):
+    if mix in SUITE_MIXES:
         from .eval_modes import run_suite
         # a quarter of the full suite, on its own seeds (the full suite is for final numbers)
         ev = {"suite": run_suite(pool, lambda: agent, "v2", scale=seeds / 240, base_seed=30_000, progress=False)}
         if vs:
             ev["vs"] = run_suite(pool, lambda: agent, "v2", scale=seeds / 240, base_seed=30_000,
                                  opp=f"ckpt:{vs}", progress=False)
+        if mix in CORE_MIXES:
+            ev["focus"] = "core"
+        if mix in RUSH_MIXES:
+            ev["rush"] = run_suite(pool, lambda: agent, "rush", scale=seeds / 240, base_seed=40_000, progress=False)
         return ev
     res = {}
     res["2p"] = run_eval(pool, lambda: agent, "ki:schwer", 2, seeds, base_seed=10_000, progress=False)

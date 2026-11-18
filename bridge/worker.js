@@ -7,7 +7,8 @@
    Request:  { "id": 1, "cmd": "reset", ...args }
    Response: { "id": 1, "ok": true, ...result }  or  { "id": 1, "ok": false, "error": "..." }
 
-   Seats are "agent" (controlled from Python), "ki" (js/ki.js) or "bot" (js/bots.js). The
+   Seats are "agent" (controlled from Python), "ki" (js/ki.js), "rush" (bridge/rush.js, a KI
+   seat in the engine whose turns the scripted rusher plays) or "bot" (js/bots.js). The
    worker plays every non-agent seat itself, so after reset and after each ended turn the game
    is either over or waiting for an agent.
 
@@ -42,6 +43,8 @@ for (const f of FILES) {
   const p = path.join(ENGINE_DIR, f);
   vm.runInContext(fs.readFileSync(p, 'utf8'), sandbox, { filename: f });
 }
+// The scripted rusher (seat kind "rush") runs in the same sandbox as the engine
+vm.runInContext(fs.readFileSync(path.join(__dirname, 'rush.js'), 'utf8'), sandbox, { filename: 'rush.js' });
 const E = sandbox;
 const konst = name => vm.runInContext(`typeof ${name} !== 'undefined' ? ${name} : undefined`, sandbox);
 
@@ -95,7 +98,7 @@ function mulberry(seed) {
   };
 }
 
-/* Seats: [{ kind: 'agent'|'ki'|'bot', civ?, ability?, kiLevel?, diff? }]. Missing civ/ability
+/* Seats: [{ kind: 'agent'|'ki'|'rush'|'bot', civ?, ability?, kiLevel?, diff? }]. Missing civ/ability
    are drawn from the seed: tile and custom maps allow any nation (also twice), fixed maps need
    distinct ones. */
 function makePlayers(seats, seed, distinct) {
@@ -110,7 +113,8 @@ function makePlayers(seats, seed, distinct) {
     }
     const abilities = CIV_BY_KEY[civ].abilities || [{ k: 'basis' }];
     const ability = s.ability || abilities[Math.floor(rnd() * abilities.length)].k;
-    const p = { civ, ability, kind: s.kind === 'agent' ? 'human' : s.kind, diff: s.diff || 'prinz' };
+    const kind = s.kind === 'agent' ? 'human' : s.kind === 'rush' ? 'ki' : s.kind;
+    const p = { civ, ability, kind, diff: s.diff || 'prinz' };
     if (s.kind !== 'bot') p.kiLevel = s.kiLevel || 'schwer';
     return p;
   });
@@ -208,7 +212,10 @@ function reset(a) {
      strike plans), the teacher and kiTurn read it, and would fall back to KI_DEFAULT_LEVEL. */
   for (const pi of agents) S.players[pi].kiLevel = players[S.players[pi].slot].kiLevel;
   const gid = a.gid ?? (games.size ? Math.max(...games.keys()) + 1 : 1);
-  const g = { S, agents, turn: null };
+  // rush seats are KI seats to the engine (start bonus, rules); runOthers plays them with rushTurn
+  const rush = new Set(S.players.map((p, i) => [p, i])
+    .filter(([p]) => (a.players[p.slot] || {}).kind === 'rush').map(([, i]) => i));
+  const g = { S, agents, rush, turn: null };
   games.set(gid, g);
   runOthers(g);
   return Object.assign({ gid }, status(g));
@@ -245,7 +252,8 @@ function runOthers(g) {
   const S = g.S;
   for (let guard = 0; !S.over && !g.agents.has(S.cur) && guard < 400; guard++) {
     const pi = S.cur, p = S.players[pi];
-    if (p.kind === 'ki') E.kiTurn(S, pi); else E.botTurn(S, pi);
+    if (g.rush && g.rush.has(pi)) E.rushTurn(S, pi);
+    else if (p.kind === 'ki') E.kiTurn(S, pi); else E.botTurn(S, pi);
     if (S.over) break;
     E.endTurn(S);
   }
