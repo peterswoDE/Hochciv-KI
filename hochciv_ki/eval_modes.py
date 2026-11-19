@@ -46,6 +46,14 @@ SUITES = {
         (3, "plaettchen", WO, 20, "rush,ki:schwer"),
         (4, "plaettchen", {}, 10, "rush,ki:schwer"),
     ],
+    # the games online (2026-11): mostly duels in "random" lobbies (tile map, random nation and
+    # ability, no wonders or events), against ChuckBot-style rushers; hc:rusher is the rusher of
+    # HochCiv-HardcodedBots (hcbot.py), much stronger than bridge/rush.js
+    "online": [
+        (2, "plaettchen", {}, 120, "hc:rusher"),
+        (2, "plaettchen", {}, 60),
+        (3, "plaettchen", {}, 30, "hc:rusher,ki:schwer"),
+    ],
     # hex tiles (v100) on their own, so that v2 stays comparable with earlier runs
     "hex": [
         (2, "plaettchen-hex", WO, 40),

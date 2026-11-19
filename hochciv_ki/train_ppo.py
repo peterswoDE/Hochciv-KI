@@ -30,6 +30,7 @@ import torch.nn.functional as F
 from .env import play_game
 from .eval import run_eval
 from .expert import ExpertAgent, search_phase
+from .hcbot import HcAgent
 from .infer import InferenceServer, ServerAgent
 from .model import collate, load_net, save_net
 from .pool import BridgePool
@@ -152,10 +153,29 @@ MIXES["core34"] = [(w // 2 if len(s) == 2 else w, s) for w, s in MIXES["core"]] 
     (2, ["L", R, "S", KI]),
     (2, ["L", R, "S", "S"]),
 ]
+# online (ppo24): the games the bots really play online (2026-11-18: 92 games after ppo23 went
+# live, almost all duels in "random" lobbies – tile map, random nation and ability, no wonders or
+# events). ppo23 beat v5 offline but lost two thirds of its games against v5 and nine of ten
+# against ChuckBot, an early slavery rusher. H: the rusher of HochCiv-HardcodedBots (hcbot.py),
+# much stronger than bridge/rush.js. Mostly duels, against it, snapshots and KI schwer.
+H = "H"
+MIXES["online"] = [
+    (10, ["L", H]),
+    (5, ["L", "S"]),
+    (3, ["L", KI]),
+    (1, ["L", R]),
+    (2, ["L", H, KI]),
+    (1, ["L", H, "S"]),
+    (1, ["L", "S", KI]),
+    (1, ["L", H, "S", KI]),
+]
+MAPS_ONLINE = {"2": ["plaettchen"] * 6 + ["original", "customgen"],
+               "3": ["plaettchen"] * 3 + ["customgen"],
+               "4": ["plaettchen"] * 3 + ["original", "customgen"]}
 # mixes with the v2 game options, maps and evaluation suite
-SUITE_MIXES = ("v2", "v3", "vs4", "vs4b", "rush", "rush2", "core", "exploit", "league", "core34")
-RUSH_MIXES = ("rush", "rush2", "core", "league", "core34")
-CORE_MIXES = ("core", "exploit", "league", "core34")       # best.pt by the core modes only (core_mode)
+SUITE_MIXES = ("v2", "v3", "vs4", "vs4b", "rush", "rush2", "core", "exploit", "league", "core34", "online")
+RUSH_MIXES = ("rush", "rush2", "core", "league", "core34", "online")
+CORE_MIXES = ("core", "exploit", "league", "core34", "online")       # best.pt by the core modes only (core_mode)
 MAPS_V3 = {**MAPS_V2,
            "2": MAPS_V2["2"] + ["original", "customgen-marathon"],
            "3": MAPS_V2["3"] + ["customgen-marathon"],
@@ -164,12 +184,14 @@ MAPS_CORE = {n: [m for m in MAPS_V3[n] if "marathon" not in m] for n in ("2", "3
 
 
 def game_options(rng, mix):
-    """v2, v3: wonders in 40 % of the games, events in half of them (hard or easy)."""
+    """v2, v3: wonders in 40 % of the games, events in half of them (hard or easy). online: in a
+    fifth of the games each, as online most games have neither."""
     if mix not in SUITE_MIXES:
         return {}
-    o = {"wonders": rng.random() < 0.4}
+    share = 0.2 if mix == "online" else 0.4
+    o = {"wonders": rng.random() < share}
     ev = rng.random()
-    if ev < 0.5:
+    if ev < (0.2 if mix == "online" else 0.5):
         o.update(events=True, eventMode="hard" if ev < 0.25 else "easy")
     return o
 
@@ -179,6 +201,8 @@ def seat(s):
         return {"kind": "agent"}
     if s == R:
         return {"kind": "rush"}
+    if s == H:
+        return {"kind": "ext"}
     kind, _, lvl = s.partition(":")
     return {"kind": "ki", "kiLevel": lvl} if kind == "ki" else {"kind": "bot", "diff": lvl}
 
@@ -450,7 +474,8 @@ def main():
         k = rng.choices(range(len(mix)), weights=weights)[0]
         seats = mix[k][1]
         maps = {"v2": MAPS_V2, "v3": MAPS_V3, "vs4": MAPS_V3, "vs4b": MAPS_V3, "rush": MAPS_V3, "rush2": MAPS_V3,
-                "core": MAPS_CORE, "exploit": MAPS_CORE, "league": MAPS_CORE, "core34": MAPS_CORE}.get(args.mix, MAPS)[str(len(seats))]
+                "core": MAPS_CORE, "exploit": MAPS_CORE, "league": MAPS_CORE, "core34": MAPS_CORE,
+                "online": MAPS_ONLINE}.get(args.mix, MAPS)[str(len(seats))]
         return {"seed": 50_000_000 + next(job_no), "seats": seats, "map": rng.choice(maps),
                 "opts": game_options(rng, args.mix), "entry": k}
 
@@ -615,6 +640,8 @@ def collect(bridge, dims, job, learner, snap, search=None, fixed=None):
             agents[i] = ServerAgent(snap, seed=job["seed"] * 31 + i)
         elif s in ("V", "W"):
             agents[i] = ServerAgent(fixed, greedy=s == "V", seed=job["seed"] * 31 + i)
+        elif s == H:
+            agents[i] = HcAgent("rusher")
     r = play_game(bridge, dims, players, agents, seed=job["seed"], map_key=job["map"], record=True,
                   startPlayer=rng.randrange(len(players)), **job.get("opts", {}))
     recs = []
@@ -626,13 +653,13 @@ def collect(bridge, dims, job, learner, snap, search=None, fixed=None):
                        e.get("target"), e.get("p"))
                       for obs, a, e in r.trajectories[pi]], z))
     vs_ki = all(s == "L" or s.startswith("ki") for s in seats) and seats.count("L") == 1
-    vs_rush = list(seats) == ["L", R]
+    vs_rush = sorted(seats) in (sorted(["L", R]), sorted(["L", H]))
     score = r.score(learner_pis[0]) if ((vs_ki or vs_rush) and learner_pis) else 0.0
     # the learner's relative score (score / fair share) over its seats, for PFSP
     rel = (sum(r.score(pi) for pi in learner_pis) / len(learner_pis) * len(players)
            if (learner_pis and r.over) else None)
     return recs, {"vs_ki": vs_ki, "vs_rush": vs_rush, "score": score, "steps": r.steps,
-                  "entry": job.get("entry"), "rel": rel, "rush": R in seats, "snap": "S" in seats}
+                  "entry": job.get("entry"), "rel": rel, "rush": R in seats or H in seats, "snap": "S" in seats}
 
 
 def best_key(ev, min_ki=0.0):
@@ -673,7 +700,9 @@ def evaluate(pool, net, device, seeds, mix="all", vs=None):
                                  opp=f"ckpt:{vs}", progress=False)
         if mix in CORE_MIXES:
             ev["focus"] = "core"
-        if mix in RUSH_MIXES:
+        if mix == "online":     # the HardcodedBots rusher instead of bridge/rush.js
+            ev["rush"] = run_suite(pool, lambda: agent, "online", scale=seeds / 240, base_seed=40_000, progress=False)
+        elif mix in RUSH_MIXES:
             ev["rush"] = run_suite(pool, lambda: agent, "rush", scale=seeds / 240, base_seed=40_000, progress=False)
         return ev
     res = {}

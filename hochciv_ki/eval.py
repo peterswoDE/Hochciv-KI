@@ -21,14 +21,18 @@ import time
 from collections import Counter
 
 from .env import KiTurnAgent, TeacherAgent, play_game
+from .hcbot import hc_agent, is_hc
 from .pool import BridgePool
 
 
 def opp_seat(spec: str):
     """'ki:schwer', 'ki:mittel', 'ki:leicht', 'bot:prinz', 'bot:koenig', 'rush' (the scripted
-    slavery rusher, bridge/rush.js), ...; a network ('ckpt:…', 'ckpts:…') is an agent seat."""
+    slavery rusher, bridge/rush.js), 'hc:rusher' (a bot of HochCiv-HardcodedBots, hcbot.py), ...;
+    a network ('ckpt:…', 'ckpts:…') is an agent seat."""
     if is_net(spec):
         return {"kind": "agent"}
+    if is_hc(spec):
+        return {"kind": "ext"}
     if spec == "rush":
         return {"kind": "rush"}
     kind, _, lvl = spec.partition(":")
@@ -75,6 +79,8 @@ def run_eval(pool: BridgePool, make_agent, opp: str, n_players=2, seeds=50, base
             players[i] = opp_seat(sp)
             if sp in nets:
                 agents[i] = nets[sp]
+            elif is_hc(sp):
+                agents[i] = hc_agent(sp)
         players[job["seat"]] = {"kind": "agent"}
         r = play_game(bridge, pool.dims, players, agents, seed=job["seed"], map_key=job["map"],
                       **(opts or {}))

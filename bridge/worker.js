@@ -98,7 +98,9 @@ function mulberry(seed) {
   };
 }
 
-/* Seats: [{ kind: 'agent'|'ki'|'rush'|'bot', civ?, ability?, kiLevel?, diff? }]. Missing civ/ability
+/* Seats: [{ kind: 'agent'|'ki'|'rush'|'bot'|'ext', civ?, ability?, kiLevel?, diff? }]. 'ext' seats are
+   played outside the worker (a Python bot, see external_state / external_done); to the engine
+   they are human seats like the agents. Missing civ/ability
    are drawn from the seed: tile and custom maps allow any nation (also twice), fixed maps need
    distinct ones. */
 function makePlayers(seats, seed, distinct) {
@@ -113,7 +115,7 @@ function makePlayers(seats, seed, distinct) {
     }
     const abilities = CIV_BY_KEY[civ].abilities || [{ k: 'basis' }];
     const ability = s.ability || abilities[Math.floor(rnd() * abilities.length)].k;
-    const kind = s.kind === 'agent' ? 'human' : s.kind === 'rush' ? 'ki' : s.kind;
+    const kind = s.kind === 'agent' || s.kind === 'ext' ? 'human' : s.kind === 'rush' ? 'ki' : s.kind;
     const p = { civ, ability, kind, diff: s.diff || 'prinz' };
     if (s.kind !== 'bot') p.kiLevel = s.kiLevel || 'schwer';
     return p;
@@ -529,6 +531,21 @@ const handlers = {
   step: a => Object.assign(step(game(a), a.i), status(game(a))),
   ki_turn: a => { kiTurnFull(game(a)); return status(game(a)); },
   state: a => ({ state: game(a).S }),
+  // external seats: the state for the outside bot (no log), and its state after the turn ended
+  external_state: a => {
+    const S = game(a).S, out = {};
+    for (const k in S) if (k !== 'log' && k !== 'kiSim') out[k] = S[k];
+    out.log = [];     // the engine writes to it
+    return { state: out };
+  },
+  external_done: a => {
+    const g = game(a);
+    g.S = Object.assign(a.state, { log: g.S.log.concat(a.state.log || []) });
+    g.turn = null;
+    if (a.force && !g.S.over) E.endTurn(g.S);    // the bot's endTurn was refused
+    if (!g.S.over && !g.agents.has(g.S.cur)) runOthers(g);
+    return status(g);
+  },
   status: a => status(game(a)),
   fork: a => fork(a),
   // victory progress of every seat by path (calibrate_phi.py)

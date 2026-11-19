@@ -91,6 +91,10 @@ def play_game(bridge: Bridge, dims, players, agents: dict, seed, map_key="plaett
     try:
         while not st["over"] and steps < max_steps:
             pi = st["cur"]
+            if getattr(by_pi[pi], "external", False):      # a hard-coded Python bot (hcbot.py)
+                st = by_pi[pi].play_turn(bridge, gid)
+                steps += 1
+                continue
             if getattr(by_pi[pi], "full_turn", False):
                 st = bridge.ki_turn(gid)
                 steps += 1

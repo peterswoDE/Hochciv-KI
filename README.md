@@ -202,6 +202,21 @@ Rush suite, `--base-seed 490000`, 380 games (mean relative score, 1.0 = fair sha
 Against KI schwer v4 and v5 reach 1.43 and 1.64; against the rusher both are below the fair
 share. ppo16 (`runs/queue11.sh`) trains v5 on v107 with a quarter of the games against it.
 
+## Online games and the HardcodedBots rusher (engine v108, 2026-11-18)
+
+ppo23 beat v5 offline (gate z 1.40) but lost online: about two thirds against v5 and most games
+against ChuckBot, an early slavery rusher. Online games are mostly duels in "random" lobbies (tile
+map, random nation and ability, no wonders or events). The rusher of HochCiv-HardcodedBots
+(`../HochCiv-HardcodedBots`, read-only; pinned copies in `runs/hcbots/<commit>` via
+`HOCHCIV_HCBOTS_DIR`) is much closer to it than `bridge/rush.js`. `hochciv_ki/hcbot.py` plays it
+as an external seat (seat kind `ext`, opponent `hc:rusher`, seat `H` in `train_ppo`): the worker
+hands the state over (`external_state`), the bot plays its turn in its own worker, the state comes
+back (`external_done`). Suite `online` in `eval_modes`, mix `online` in `train_ppo`.
+
+Suite `online`, `--base-seed 490000`: v5 0.467 in duels against the rusher, 0.738 against KI
+schwer, 0.450 in 3p (+ KI). ppo24 (`runs/queue18.sh`, from v5, mix online, 100 iterations) stayed
+at 0.44–0.52 against the rusher and failed the gate.
+
 ## v3 (production model from 2026-11-03 to 2026-11-06)
 
 `checkpoints/v3.pt` = run B' (`checkpoints/ppo4/best.pt`, iteration 80): PPO from v2 on the v2 mix
