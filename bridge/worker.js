@@ -431,10 +431,13 @@ function fork(a) {
   const S = E.kiClone(S0, a.seed | 0);
   delete S.kiSim;
   S.evNext = null;
+  // keepSeats: the other agent/external seats stay seats (an external bot plays them on the
+  // copy too, for counterfactual analysis); by default they become KI schwer
+  const keep = a.keepSeats ? new Set(g.agents) : new Set([pi]);
   S.players.forEach((p, i) => {
-    if (i !== pi && p.kind !== 'bot' && p.kind !== 'barbar') { p.kind = 'ki'; p.kiLevel = 'schwer'; }
+    if (!keep.has(i) && p.kind !== 'bot' && p.kind !== 'barbar') { p.kind = 'ki'; p.kiLevel = 'schwer'; }
   });
-  const f = { S, agents: new Set([pi]), turn: null };
+  const f = { S, agents: keep, turn: null, rush: a.keepSeats ? g.rush : null };
   const t = g.turn;
   if (t && t.pi === pi && t.round === S.round) {
     f.turn = Object.assign({}, t, {

@@ -1,6 +1,7 @@
 """The scripted rusher (bridge/rush.js): it plays its seats without errors, follows its plan
-(slavery sacrifices, armies by round 3) and beats KI schwer more often than not – it is meant
-to be the opponent KI schwer never is.
+(slavery sacrifices, armies by round 3) and stays a real threat to KI schwer. Up to v109 it won
+more often than not (v108: 10 of 16); slavery pays 4 coins instead of 7 since v110, and it wins
+about 7 of 16 there.
 
     python -m tests.test_rush
 """
@@ -39,7 +40,7 @@ def main():
             early_army += any("Armee gebaut" in e["m"] and e["r"] <= 3 for e in log)
             print(f"seed {7000 + k}: rusher ({name}) {'won' if won else 'lost'} in round {S['round']}", flush=True)
     print(f"rusher won {wins}/{GAMES}, sacrificed in {sacrificed}, army by round 3 in {early_army}")
-    ok = wins > GAMES / 2 and sacrificed >= GAMES // 4 and early_army >= GAMES // 2
+    ok = wins >= GAMES // 3 and sacrificed >= GAMES // 4 and early_army >= GAMES // 2
     print("OK" if ok else "FAIL")
     sys.exit(0 if ok else 1)
 

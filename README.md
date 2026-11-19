@@ -217,6 +217,19 @@ Suite `online`, `--base-seed 490000`: v5 0.467 in duels against the rusher, 0.73
 schwer, 0.450 in 3p (+ KI). ppo24 (`runs/queue18.sh`, from v5, mix online, 100 iterations) stayed
 at 0.44–0.52 against the rusher and failed the gate.
 
+`fork` in `bridge/worker.js` takes `keepSeats`: the other agent and external seats stay seats on
+the copy (an external bot keeps playing them), for counterfactual rollouts against the HC rusher.
+
+## Engine v110 (2026-11-19)
+
+v110 pays 4 coins per sacrificed population instead of 7 (v109 only changed the UI and added
+`unspent`, the end-turn check of human players). Nothing in the bridge or the features depends
+on the number. `runs/engines/v110` is the server's copy, identical to the engine repo at 524284b.
+The online client follows the server's version by itself (`check_engine`, every 5 minutes) and
+finds the engine in `multiplayer-server/HochCiv/js` or `runs/engines/v110`. `bridge/rush.js` wins
+7 of 16 against KI schwer on v110 (v108: 10), `tests/test_rush.py` now asks for a third.
+ppo25 (`runs/queue19.sh`) fine-tunes v5 on v110.
+
 ## v3 (production model from 2026-11-03 to 2026-11-06)
 
 `checkpoints/v3.pt` = run B' (`checkpoints/ppo4/best.pt`, iteration 80): PPO from v2 on the v2 mix
