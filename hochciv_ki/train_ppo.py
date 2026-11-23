@@ -169,13 +169,21 @@ MIXES["online"] = [
     (1, ["L", "S", KI]),
     (1, ["L", H, "S", KI]),
 ]
+# online_league (ppo27, 2026-11-23): the online mix plus a quarter of the games against an
+# exploiter of the production network (--fixed, exploit2): the holes it found get closed
+# while the mix stays the one played online
+MIXES["online_league"] = MIXES["online"] + [
+    (5, ["L", "V"]),
+    (2, ["L", "W"]),
+    (1, ["L", "V", KI]),
+]
 MAPS_ONLINE = {"2": ["plaettchen"] * 6 + ["original", "customgen"],
                "3": ["plaettchen"] * 3 + ["customgen"],
                "4": ["plaettchen"] * 3 + ["original", "customgen"]}
 # mixes with the v2 game options, maps and evaluation suite
-SUITE_MIXES = ("v2", "v3", "vs4", "vs4b", "rush", "rush2", "core", "exploit", "league", "core34", "online")
-RUSH_MIXES = ("rush", "rush2", "core", "league", "core34", "online")
-CORE_MIXES = ("core", "exploit", "league", "core34", "online")       # best.pt by the core modes only (core_mode)
+SUITE_MIXES = ("v2", "v3", "vs4", "vs4b", "rush", "rush2", "core", "exploit", "league", "core34", "online", "online_league")
+RUSH_MIXES = ("rush", "rush2", "core", "league", "core34", "online", "online_league")
+CORE_MIXES = ("core", "exploit", "league", "core34", "online", "online_league")       # best.pt by the core modes only (core_mode)
 MAPS_V3 = {**MAPS_V2,
            "2": MAPS_V2["2"] + ["original", "customgen-marathon"],
            "3": MAPS_V2["3"] + ["customgen-marathon"],
@@ -190,10 +198,10 @@ def game_options(rng, mix, exp_share: float = 0.0):
     and in marathon, as the server does)."""
     if mix not in SUITE_MIXES:
         return {"expCivs": True} if exp_share and rng.random() < exp_share else {}
-    share = 0.2 if mix == "online" else 0.4
+    share = 0.2 if mix in ("online", "online_league") else 0.4
     o = {"wonders": rng.random() < share}
     ev = rng.random()
-    if ev < (0.2 if mix == "online" else 0.5):
+    if ev < (0.2 if mix in ("online", "online_league") else 0.5):
         o.update(events=True, eventMode="hard" if ev < 0.25 else "easy")
     if exp_share and rng.random() < exp_share:
         o["expCivs"] = True
@@ -481,7 +489,7 @@ def main():
         seats = mix[k][1]
         maps = {"v2": MAPS_V2, "v3": MAPS_V3, "vs4": MAPS_V3, "vs4b": MAPS_V3, "rush": MAPS_V3, "rush2": MAPS_V3,
                 "core": MAPS_CORE, "exploit": MAPS_CORE, "league": MAPS_CORE, "core34": MAPS_CORE,
-                "online": MAPS_ONLINE}.get(args.mix, MAPS)[str(len(seats))]
+                "online": MAPS_ONLINE, "online_league": MAPS_ONLINE}.get(args.mix, MAPS)[str(len(seats))]
         return {"seed": 50_000_000 + next(job_no), "seats": seats, "map": rng.choice(maps),
                 "opts": game_options(rng, args.mix, args.exp_share), "entry": k}
 
@@ -706,7 +714,7 @@ def evaluate(pool, net, device, seeds, mix="all", vs=None):
                                  opp=f"ckpt:{vs}", progress=False)
         if mix in CORE_MIXES:
             ev["focus"] = "core"
-        if mix == "online":     # the HardcodedBots rusher instead of bridge/rush.js
+        if mix in ("online", "online_league"):     # the HardcodedBots rusher instead of bridge/rush.js
             ev["rush"] = run_suite(pool, lambda: agent, "online", scale=seeds / 240, base_seed=40_000, progress=False)
         elif mix in RUSH_MIXES:
             ev["rush"] = run_suite(pool, lambda: agent, "rush", scale=seeds / 240, base_seed=40_000, progress=False)

@@ -21,6 +21,7 @@ class BridgePool:
         self._ex = ThreadPoolExecutor(max_workers=workers)
         with Bridge(engine_dir) as b:
             info = b.info()
+        self.info = info
         self.version = info["version"]
         self.dims = info["dims"]
 

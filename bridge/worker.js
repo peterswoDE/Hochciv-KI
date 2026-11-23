@@ -539,7 +539,9 @@ const handlers = {
   rollSetup: a => ({ setup: E.rollSetup(a.cfg) }),
   // online marathon draft: the JS KI's pick for V index `pi` on the server's { V, D }
   draftPick: a => ({ id: E.kiDraftPick(a.V, a.D, a.pi) }),
-  info: () => ({ version: VERSION, engineDir: ENGINE_DIR, civs: CIVS.map(c => c.k), expCivs: ALL_CIVS.filter(c => c.exp).map(c => c.k), dims: FEAT.dims }),
+  info: () => ({ version: VERSION, engineDir: ENGINE_DIR, civs: CIVS.map(c => c.k), expCivs: ALL_CIVS.filter(c => c.exp).map(c => c.k),
+    abilities: Object.fromEntries(ALL_CIVS.map(c => [c.k, (c.abilities || [{ k: 'basis' }]).map(a => a.k)])),
+    needsWonders: ALL_CIVS.filter(c => c.wo).map(c => c.k), dims: FEAT.dims }),
   observe: a => observe(game(a), a.grid !== false),
   reset: a => reset(a),
   candidates: a => ({ cands: candidates(game(a)) }),
