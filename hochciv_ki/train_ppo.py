@@ -183,16 +183,20 @@ MAPS_V3 = {**MAPS_V2,
 MAPS_CORE = {n: [m for m in MAPS_V3[n] if "marathon" not in m] for n in ("2", "3", "4")}
 
 
-def game_options(rng, mix):
+def game_options(rng, mix, exp_share: float = 0.0):
     """v2, v3: wonders in 40 % of the games, events in half of them (hard or easy). online: in a
-    fifth of the games each, as online most games have neither."""
+    fifth of the games each, as online most games have neither. exp_share (engine v111+): share
+    of the games with the experimental nations in the draw (the worker ignores it on fixed maps
+    and in marathon, as the server does)."""
     if mix not in SUITE_MIXES:
-        return {}
+        return {"expCivs": True} if exp_share and rng.random() < exp_share else {}
     share = 0.2 if mix == "online" else 0.4
     o = {"wonders": rng.random() < share}
     ev = rng.random()
     if ev < (0.2 if mix == "online" else 0.5):
         o.update(events=True, eventMode="hard" if ev < 0.25 else "easy")
+    if exp_share and rng.random() < exp_share:
+        o["expCivs"] = True
     return o
 
 
@@ -419,6 +423,8 @@ def main():
                     help="share of the snapshot seats played by the start network instead of a league snapshot")
     ap.add_argument("--pfsp", action="store_true",
                     help="weight the mix entries and the snapshot choice by how badly the learner does (pfsp_factor)")
+    ap.add_argument("--exp-share", type=float, default=0.0,
+                    help="share of the games with the experimental nations (engine v111+)")
     ap.add_argument("--rush-balance", action="store_true",
                     help="weight the samples so rush games count as much as their share of the games (balance_weights)")
     ap.add_argument("--fixed", default=None, help="network for the V/W seats (mix vs4), e.g. checkpoints/v4x.pt")
@@ -477,7 +483,7 @@ def main():
                 "core": MAPS_CORE, "exploit": MAPS_CORE, "league": MAPS_CORE, "core34": MAPS_CORE,
                 "online": MAPS_ONLINE}.get(args.mix, MAPS)[str(len(seats))]
         return {"seed": 50_000_000 + next(job_no), "seats": seats, "map": rng.choice(maps),
-                "opts": game_options(rng, args.mix), "entry": k}
+                "opts": game_options(rng, args.mix, args.exp_share), "entry": k}
 
     with BridgePool(**kw) as pool:
         print(f"engine {pool.version}, {pool.workers} workers, mix {args.mix}, start at iter {st['iter']}", flush=True)

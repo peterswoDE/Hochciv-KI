@@ -62,7 +62,15 @@ if (engineStartBonus) sandbox.startBonus = function (S, pi) {
 };
 const VERSION = konst('APP_VERSION');
 const CIVS = konst('CIVS');
-const CIV_BY_KEY = Object.fromEntries(CIVS.map(c => [c.k, c]));
+// with the experimental nations (v111: EXP_CIVS, offered with the expCivs option)
+const ALL_CIVS = konst('ALL_CIVS') || CIVS;
+const CIV_BY_KEY = Object.fromEntries(ALL_CIVS.map(c => [c.k, c]));
+/* Nations a game can draw: the base ones, with `exp` also the experimental ones (the ones that
+   need wonders only with wonders), as the server's lobby offers them (engine civKeysFor). */
+function civPool(exp, wo) {
+  const f = konst('civKeysFor');
+  return f ? f({ exp: !!exp, wo: !!wo }) : CIVS.map(c => c.k);
+}
 const armiesOf = konst('armiesOf');
 const FEAT = require('./features').makeFeatures(E, konst);
 
@@ -103,16 +111,17 @@ function mulberry(seed) {
    they are human seats like the agents. Missing civ/ability
    are drawn from the seed: tile and custom maps allow any nation (also twice), fixed maps need
    distinct ones. */
-function makePlayers(seats, seed, distinct) {
+function makePlayers(seats, seed, distinct, opts = {}) {
   const rnd = mulberry(seed ^ 0x5bd1e995);
   const used = new Set(seats.filter(s => s.civ).map(s => s.civ));
   return seats.map(s => {
     let civ = s.civ;
     if (!civ) {
-      const pool = CIVS.map(c => c.k).filter(k => !distinct || !used.has(k));
+      const pool = civPool(opts.exp, opts.wo).filter(k => !distinct || !used.has(k));
       civ = pool[Math.floor(rnd() * pool.length)];
       used.add(civ);
     }
+    if (!CIV_BY_KEY[civ]) throw new Error(`engine ${VERSION} has no nation ${civ}`);
     const abilities = CIV_BY_KEY[civ].abilities || [{ k: 'basis' }];
     const ability = s.ability || abilities[Math.floor(rnd() * abilities.length)].k;
     const kind = s.kind === 'agent' || s.kind === 'ext' ? 'human' : s.kind === 'rush' ? 'ki' : s.kind;
@@ -167,18 +176,20 @@ function genCustomMap(seed, n, marathon = false) {
    random custom map, genCustomMap, the second one with the marathon rules), or a custom map
    object as stored by the map editor ({ name, rows, spawns, marathon?, ... }). Agent seats
    place their start tile (kiPlaceSeat) and draft their marathon abilities (kiDraftPick) with
-   the JS KI. Options: events, eventMode ('hard' | 'easy'), wonders. */
+   the JS KI. Options: events, eventMode ('hard' | 'easy'), wonders, expCivs (the experimental
+   nations of v111 in the draw – tile and custom maps without the marathon, as on the server). */
 function reset(a) {
   const seed = (a.seed ?? Math.floor(Math.random() * 2 ** 31)) | 0;
   const map = a.map === 'customgen' || a.map === 'customgen-marathon'
     ? genCustomMap(seed, a.players.length, a.map === 'customgen-marathon') : (a.map || 'plaettchen');
   const fixed = map === 'original';
-  const players = makePlayers(a.players, seed, fixed);
+  const marathon = map === 'marathon' || (typeof map === 'object' && !!map.marathon);
+  const players = makePlayers(a.players, seed, fixed, { exp: !!a.expCivs && !fixed && !marathon, wo: !!a.wonders });
   const cfg = {
     seed, players, duel: players.length === 2, events: !!a.events,
     eventMode: a.eventMode === 'easy' ? 'easy' : 'hard', wonders: !!a.wonders, startPlayer: a.startPlayer ?? 0,
   };
-  if (map === 'marathon' || (typeof map === 'object' && map.marathon)) {
+  if (marathon) {
     if (map === 'marathon') cfg.map = E.marathonMap(seed);
     else {
       const r = E.checkCustomMap(map);
@@ -189,6 +200,7 @@ function reset(a) {
     cfg.marathon = true;
     draftMarathon(cfg, seed);
   } else if (map === 'plaettchen' || map === 'plaettchen-hex') {
+    // 'plaettchen-hex': since v111 the engine has one tile map per player count (the option is ignored)
     const plan = E.tilePlan(players.map(p => p.civ), seed, { hex: map === 'plaettchen-hex' });
     if (!plan) throw new Error('no tile map for ' + players.length + ' players');
     const setup = E.rollSetup(Object.assign({}, cfg));
@@ -527,7 +539,7 @@ const handlers = {
   rollSetup: a => ({ setup: E.rollSetup(a.cfg) }),
   // online marathon draft: the JS KI's pick for V index `pi` on the server's { V, D }
   draftPick: a => ({ id: E.kiDraftPick(a.V, a.D, a.pi) }),
-  info: () => ({ version: VERSION, engineDir: ENGINE_DIR, civs: CIVS.map(c => c.k), dims: FEAT.dims }),
+  info: () => ({ version: VERSION, engineDir: ENGINE_DIR, civs: CIVS.map(c => c.k), expCivs: ALL_CIVS.filter(c => c.exp).map(c => c.k), dims: FEAT.dims }),
   observe: a => observe(game(a), a.grid !== false),
   reset: a => reset(a),
   candidates: a => ({ cands: candidates(game(a)) }),

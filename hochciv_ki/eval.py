@@ -50,6 +50,8 @@ def mode_name(n_players, map_key, opts):
         tags.append("wonders")
     if o.get("events"):
         tags.append("events " + o.get("eventMode", "hard"))
+    if o.get("expCivs"):
+        tags.append("exp civs")
     return ", ".join(tags)
 
 
@@ -65,7 +67,7 @@ def jobs_for(n_players, seeds, base_seed, map_key):
 
 def run_eval(pool: BridgePool, make_agent, opp: str, n_players=2, seeds=50, base_seed=10_000,
              map_key="plaettchen", progress=True, opts=None):
-    """opts: game options for the bridge (events, eventMode, wonders)."""
+    """opts: game options for the bridge (events, eventMode, wonders, expCivs)."""
     agent = make_agent()
     specs = opp.split(",")
     nets = {sp: agent_factory(sp)() for sp in set(specs) if is_net(sp)}
@@ -147,8 +149,11 @@ def main():
     ap.add_argument("--base-seed", type=int, default=10_000)
     ap.add_argument("--wonders", action="store_true")
     ap.add_argument("--events", choices=["hard", "easy"], default=None)
+    ap.add_argument("--exp-civs", action="store_true", help="the experimental nations (v111+) in the draw")
     args = ap.parse_args()
     opts = {"wonders": args.wonders}
+    if args.exp_civs:
+        opts["expCivs"] = True
     if args.events:
         opts.update(events=True, eventMode=args.events)
     kw = {"workers": args.workers} if args.workers else {}

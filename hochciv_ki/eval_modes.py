@@ -17,6 +17,7 @@ from .pool import BridgePool
 HE = {"events": True, "eventMode": "hard"}
 EE = {"events": True, "eventMode": "easy"}
 WO = {"wonders": True}
+EX = {"expCivs": True}
 
 # (players, map, options, seeds at scale 1[, opponents – default: --opp])
 SUITES = {
@@ -54,7 +55,16 @@ SUITES = {
         (2, "plaettchen", {}, 60),
         (3, "plaettchen", {}, 30, "hc:rusher,ki:schwer"),
     ],
-    # hex tiles (v100) on their own, so that v2 stays comparable with earlier runs
+    # the experimental nations (v111+: Rome, Venice, Aztecs, Egypt, Germany, Maya, China, USA) in
+    # the draw of every seat, as in unranked lobbies and Rundenspiele with expCivs on
+    "exp": [
+        (2, "plaettchen", EX, 60),
+        (2, "plaettchen", {**WO, **EX}, 40),
+        (3, "customgen", {**WO, **HE, **EX}, 20),
+        (4, "plaettchen", EX, 15),
+    ],
+    # hex tiles (v100) on their own, so that v2 stays comparable with earlier runs; since v111 the
+    # engine ignores the hex option: these are the normal tile maps
     "hex": [
         (2, "plaettchen-hex", WO, 40),
         (3, "plaettchen-hex", HE, 20),

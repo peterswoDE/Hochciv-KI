@@ -188,6 +188,7 @@ function setupHtml(x, i) {
         <span>KI seats</span>${f("kiCount", opts(range(0, x.playerCount - 2), x.kiCount))}
         <span>Wonders</span><input type="checkbox" data-s="${i}" data-f="wonders" ${x.wonders ? "checked" : ""}>
         <span>Events</span>${f("events", opts(EVENTS, x.events))}
+        ${x.mapKey !== "marathon" ? `<span>Experimental nations <span class="why">(not ranked)</span></span><input type="checkbox" data-s="${i}" data-f="expCivs" ${x.expCivs ? "checked" : ""}>` : ""}
         <span>🔥 Ranked <span class="why">(MMR counts, KI on Schwer)</span></span><input type="checkbox" data-s="${i}" data-f="ranked" ${x.ranked ? "checked" : ""}>
         <span>KI level</span><select data-s="${i}" data-f="difficulty" ${x.ranked ? "disabled" : ""}>${opts([["leicht", "Leicht"], ["mittel", "Mittel"], ["schwer", "Schwer"]], x.difficulty)}</select>
         ${live ? `<span>Turn timer</span>${f("turnTime", opts(TIMERS, x.turnTime))}
@@ -204,6 +205,7 @@ function setupLine(x) {
   bits.push(`${x.kiCount} KI (${x.difficulty})`);
   if (x.wonders) bits.push("wonders");
   if (x.events && x.events !== "off") bits.push(`events ${x.events}`);
+  if (x.expCivs && !x.ranked && x.mapKey !== "marathon") bits.push("exp. nations");
   if (x.kind === "live") bits.push(x.turnTime ? `timer ${x.turnTime / 60} min` : "no timer");
   else bits.push(x.civMode === "random" ? "random nations" : "chosen nations");
   bits.push(x.isPublic ? "public" : "private");
@@ -222,6 +224,7 @@ function renderSettings() {
       <div class="checks">${MAP_GROUPS.map(([k, t]) => `<label><input type="checkbox" data-map="${k}" ${j.maps.includes(k) ? "checked" : ""}> ${t}</label>`).join("")}</div>
       <div class="row"><span>Empires</span><select data-k="join.min_empires">${opts(range(2, MAX_EMPIRES), j.min_empires)}</select> – <select data-k="join.max_empires">${opts(range(2, MAX_EMPIRES), j.max_empires)}</select></div>
       <div class="row">${cb("join.wonders", j.wonders, "Games with wonders")}</div>
+      <div class="row">${cb("join.exp_civs", j.exp_civs, "Games with experimental nations")}</div>
       <div class="why">Events</div>
       <div class="checks">${EVENTS.map(([k, t]) => `<label><input type="checkbox" data-ev="${k}" ${j.events.includes(k) ? "checked" : ""}> ${t}</label>`).join("")}</div>
       <div class="row"><span>Ranked</span><select data-k="join.ranked">${opts([["any", "any"], ["unranked", "unranked only"], ["ranked", "ranked only"]], j.ranked)}</select></div>
@@ -296,7 +299,7 @@ $("form").addEventListener("change", e => {
     }
     if (f === "kind" || f === "mapKey" || f === "playerCount") x.kiCount = Math.min(x.kiCount, x.playerCount - 2);
     if (f === "ranked" && x.ranked) x.difficulty = "schwer";
-    changed(["kind", "mapKey", "playerCount", "kiCount", "difficulty", "turnTime", "civMode", "isPublic", "ranked", "wonders", "events"].includes(f));
+    changed(["kind", "mapKey", "playerCount", "kiCount", "difficulty", "turnTime", "civMode", "isPublic", "ranked", "wonders", "events", "expCivs"].includes(f));
   }
 });
 $("form").addEventListener("toggle", e => {
@@ -389,7 +392,7 @@ document.addEventListener("click", async e => {
       const live = t.dataset.add === "live";
       cfg.host.setups.push({ id: Math.random().toString(16).slice(2, 8), kind: t.dataset.add, count: 1, mapKey: HOST_MAPS[t.dataset.add][0],
                              playerCount: 2, kiCount: 0, difficulty: "schwer", turnTime: 180, randomCivs: false, civMode: "random",
-                             isPublic: true, playerBotLimit: null, ranked: false, wonders: false, events: "off", _open: true });
+                             isPublic: true, playerBotLimit: null, ranked: false, wonders: false, events: "off", expCivs: false, _open: true });
       changed(true);
     } else if (t.dataset.del !== undefined) {
       cfg.host.setups.splice(+t.dataset.del, 1); changed(true);

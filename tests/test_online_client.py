@@ -304,7 +304,7 @@ def test_live_game_tries_a_refused_end_again():
 def test_old_engines_play_their_own_rules():
     brain = Brain("teacher", device="cpu")
     try:
-        for version in ("v100", "v98"):
+        for version in ("v110", "v108"):          # the old engines the server keeps (v112)
             old = brain.on(version)
             assert old is brain.on(version) and old.lock is brain.lock
             assert old.bridge.info()["version"] == version
@@ -371,16 +371,16 @@ def test_the_server_engine_is_followed():
     mgr = SimpleNamespace(acc=SimpleNamespace(url="x"), brain=brain, last_engine_check=0)
     real = cl.server_version
     try:
-        cl.server_version = lambda url: "v98"
+        cl.server_version = lambda url: "v110"
         cl.Manager.check_engine(mgr)
-        assert brain.current == "v98" and brain.on(None).version == "v98"
-        assert conn(brain).brain.on(None) is brain.on("v98")
+        assert brain.current == "v110" and brain.on(None).version == "v110"
+        assert conn(brain).brain.on(None) is brain.on("v110")
         cl.server_version = lambda url: "v1"
         cl.Manager.check_engine(mgr)
-        assert brain.current == "v98"
+        assert brain.current == "v110"
         cl.server_version = lambda url: None
         cl.Manager.check_engine(mgr)
-        assert brain.current == "v98"
+        assert brain.current == "v110"
         cl.server_version = lambda url: brain.version
         cl.Manager.check_engine(mgr)
         assert brain.on(None) is brain
@@ -424,6 +424,23 @@ def test_the_winner_is_shown():
     r = winners_of({"winner": 0, "winners": [0, 2]}, S, 1)
     assert r == {"winners": ["NeuraBot", "KI Russland"], "won": False, "shared": True}
     assert winners_of({"reason": "kicked"}, S, 1) is None
+
+
+def test_experimental_nations_in_configs():
+    """expCivs (v111+): hosted only where the server offers it, matched like the server stores
+    it, and a join filter for it."""
+    from hochciv_ki.online.client import DEFAULTS, exp_civs_on, host_options, join_filter, setup_key
+    setup = {"mapKey": "plaettchen", "playerCount": 2, "kiCount": 0, "expCivs": True, "events": "off"}
+    assert host_options(setup)["expCivs"] and exp_civs_on(setup)
+    assert not host_options(dict(setup, ranked=True))["expCivs"]
+    assert not host_options(dict(setup, mapKey="marathon"))["expCivs"]
+    assert not host_options(dict(setup, mapKey="0"))["expCivs"]
+    stored = {"mapKey": "plaettchen", "playerCount": 2, "humanCount": 2, "expCivs": True, "events": False}
+    assert setup_key(stored) == setup_key(setup)
+    assert setup_key(dict(stored, expCivs=False)) != setup_key(setup)
+    j = dict(DEFAULTS["join"])
+    assert join_filter(j, stored) is None
+    assert join_filter(dict(j, exp_civs=False), stored) == "experimental nations"
 
 
 def main():

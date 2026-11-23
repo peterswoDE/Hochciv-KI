@@ -72,7 +72,7 @@ MAX_SETUPS = 12
 
 SETUP = {"kind": "live", "count": 1, "mapKey": "random", "playerCount": 2, "kiCount": 0, "difficulty": "schwer",
          "turnTime": 180, "randomCivs": False, "civMode": "random", "isPublic": True, "playerBotLimit": None,
-         "ranked": False, "wonders": False, "events": "off"}
+         "ranked": False, "wonders": False, "events": "off", "expCivs": False}
 DEFAULTS = {
     "version": 2,
     "join": {
@@ -87,6 +87,7 @@ DEFAULTS = {
         "bot_hosts": True,                   # games hosted by other bots
         "wonders": True,                     # games with wonders
         "events": list(EVENT_MODES),         # event modes joined: off, easy, hard
+        "exp_civs": True,                    # games with the experimental nations (v111+)
     },
     "host": {
         "on": False,
@@ -172,6 +173,8 @@ def join_filter(j: dict, cfg: dict, empires=None, ki=None, host_is_bot=False, li
         return "marathon rules"
     if cfg.get("wonders") and not j["wonders"]:
         return "wonders"
+    if cfg.get("expCivs") and not j.get("exp_civs", True):
+        return "experimental nations"
     if event_mode(cfg) not in j["events"]:
         return "no events" if event_mode(cfg) == "off" else f"events {event_mode(cfg)}"
     n = empires or cfg.get("playerCount")
@@ -209,7 +212,15 @@ def host_empires(map_key):
 def host_options(setup: dict) -> dict:
     """The game options of a host setup in the server's config fields."""
     ev = setup.get("events", "off")
-    return {"wonders": bool(setup.get("wonders")), "events": ev != "off", "eventMode": ev if ev != "off" else "hard"}
+    return {"wonders": bool(setup.get("wonders")), "events": ev != "off", "eventMode": ev if ev != "off" else "hard",
+            "expCivs": exp_civs_on(setup)}
+
+
+def exp_civs_on(cfg: dict) -> bool:
+    """Whether a config plays with the experimental nations (v111+), as the server decides
+    (utils/civdraft.js expCivsOn): switched on, tile or custom map, no marathon, not ranked."""
+    free = str(cfg.get("mapKey")) in ("plaettchen", "random", "eigene")
+    return bool(cfg.get("expCivs")) and free and not is_marathon(cfg) and not cfg.get("ranked")
 
 
 def clean_setup(raw: dict, old: dict | None = None) -> dict:
@@ -228,6 +239,8 @@ def clean_setup(raw: dict, old: dict | None = None) -> dict:
     s["kiCount"] = min(_num(raw.get("kiCount", s["kiCount"]), 0, MAX_PLAYERS, 0), s["playerCount"] - 2)  # two humans
     if "wonders" in raw:
         s["wonders"] = bool(raw["wonders"])
+    if "expCivs" in raw:
+        s["expCivs"] = bool(raw["expCivs"])
     if raw.get("events") in EVENT_MODES:
         s["events"] = raw["events"]
     if raw.get("difficulty") in KI_LEVELS:
@@ -260,7 +273,7 @@ def clean_settings(raw: dict, old: dict | None = None) -> dict:
         s.update({k: v for k, v in old.items() if k not in ("join", "host")})
     raw = raw or {}
     j, rj = s["join"], raw.get("join") or {}
-    for k in ("on", "live", "async", "ki", "timer", "bot_hosts", "wonders"):
+    for k in ("on", "live", "async", "ki", "timer", "bot_hosts", "wonders", "exp_civs"):
         if k in rj:
             j[k] = bool(rj[k])
     if isinstance(rj.get("events"), list):
@@ -294,7 +307,7 @@ def setup_key(cfg: dict):
     humans = cfg.get("humanCount") if cfg.get("humanCount") is not None else n - (cfg.get("kiCount") or 0)
     # a setup stores events as "off" / "easy" / "hard", the server's config as events + eventMode
     ev = cfg.get("events") if isinstance(cfg.get("events"), str) else event_mode(cfg)
-    return str(cfg.get("mapKey")), n, humans, bool(cfg.get("ranked")), bool(cfg.get("wonders")), ev
+    return str(cfg.get("mapKey")), n, humans, bool(cfg.get("ranked")), bool(cfg.get("wonders")), ev, exp_civs_on(cfg)
 
 
 class Tagged(logging.LoggerAdapter):
@@ -363,6 +376,11 @@ class Brain:
                 brain = copy.copy(self)
                 brain.bridge = Bridge(engine_dir_of(engine))
                 brain.version = engine
+                # same net, so the observation must have the same layout (features.js keeps it
+                # fixed across engine versions); a different one would be decoded wrongly
+                if brain.bridge.info()["dims"]["names"] != self.dims["names"]:
+                    brain.bridge.close()
+                    raise RuntimeError(f"engine {engine}: observation layout differs from {self.version}")
                 self.others[engine] = brain
                 log.info("loaded engine %s for its running games", engine)
             return self.others[engine]

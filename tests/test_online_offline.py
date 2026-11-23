@@ -12,7 +12,7 @@ from hochciv_ki.bridge import Bridge
 from hochciv_ki.env import TeacherAgent, decode_obs
 
 
-def run(games=6, agent=None):
+def run(games=10, agent=None):
     agent = agent or TeacherAgent()
     bad = 0
     with Bridge() as server, Bridge() as client:
@@ -21,7 +21,9 @@ def run(games=6, agent=None):
             n = [2, 2, 3, 4][g % 4]
             players = [{"kind": "agent"}] + [{"kind": "ki", "kiLevel": "schwer"}] * (n - 1)
             random.Random(g).shuffle(players)
-            st = server.reset(players, seed=500 + g, map=["plaettchen", "original", "customgen"][g % 3])
+            # from game 6 on: the experimental nations (v111+) and wonders (Aztecs, Egypt need them)
+            kw = {"expCivs": True, "wonders": True} if g >= 6 else {}
+            st = server.reset(players, seed=500 + g, map=["plaettchen", "original", "customgen"][g % 3], **kw)
             gid, me = st["gid"], st["agents"][0]
             sent = rejected = 0
             while not st["over"]:
@@ -43,7 +45,8 @@ def run(games=6, agent=None):
                     if st["over"]:
                         break
             won = me in st.get("winners", [])
-            print(f"game {g}: {n}p, round {st['round']}, {sent} actions sent, {rejected} rejected, "
+            civs = ",".join(p["civ"] for p in server.state(gid)["players"])
+            print(f"game {g}: {n}p {civs}, round {st['round']}, {sent} actions sent, {rejected} rejected, "
                   f"{'won' if won else 'lost'}: {st.get('how', '')[:50]}")
             bad += rejected
             server.close_game(gid)
@@ -51,7 +54,7 @@ def run(games=6, agent=None):
 
 
 if __name__ == "__main__":
-    n = int(sys.argv[1]) if len(sys.argv) > 1 else 6
+    n = int(sys.argv[1]) if len(sys.argv) > 1 else 10
     agent = None
     if len(sys.argv) > 2:          # a checkpoint or agent spec: plays instead of the teacher
         from hochciv_ki.eval import agent_factory

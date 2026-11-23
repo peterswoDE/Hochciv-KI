@@ -20,6 +20,12 @@
 
 const NSEAT = 8;
 const TERRAINS = ['G', 'W', 'B', 'F', 'M', 'I', 'V', 'X'];
+// [nation, abilities]: the base nations, then the experimental ones of v111/v112 (EXP_CIVS)
+const FIXED_CIVS = [
+  ['griechenland', ['basis', 'gratistech', 'rueckschau']], ['england', ['basis', 'gruenden', 'kuestenstaedte']],
+  ['russland', ['basis', 'wachstum', 'siedler']], ['wikinger', ['basis', 'kampfertrag', 'armeemacht']],
+  ['rom', ['basis', 'viaappia']], ['venedig', ['basis']], ['azteken', ['basis']], ['aegypten', ['basis']],
+  ['deutschland', ['basis']], ['maya', ['basis']], ['china', ['basis']], ['usa', ['basis']]];
 const CAND_TYPES = ['tech', 'free', 'back', 'pick', 'copyf', 'copyp', 'gfree', 'grow', 'found',
   'road1', 'road2', 'slave', 'col', 'wonder', 'power', 'strike', 'defend', 'flank', 'end'];
 
@@ -36,9 +42,13 @@ function makeFeatures(E, konst) {
   const TECH_KEYS = Array.isArray(TECHS) ? TECHS.map(t => t.k) : Object.keys(TECHS);
   const TECH_IDX = Object.fromEntries(TECH_KEYS.map((k, i) => [k, i]));
   const NT = TECH_KEYS.length;
+  // Nations and abilities: a fixed list, the same on every engine version (an online Brain keeps
+  // its net and dims when it serves a game of an older engine). The experimental nations came
+  // with v111; anything else (a later engine's new nation) counts as civ:other / abil:other.
+  const CIV_KEYS = FIXED_CIVS.map(c => c[0]);
   const ABILS = [];
-  for (const c of konst('CIVS')) for (const a of (c.abilities || [])) ABILS.push(c.k + ':' + a.k);
-  const CIV_KEYS = konst('CIVS').map(c => c.k);
+  for (const [k, abs] of FIXED_CIVS) for (const a of abs) ABILS.push(k + ':' + a);
+  const armyCost = fn('armyCost'), incomeNowOpen = fn('incomeNowOpen'), growPrice = fn('growPrice');
   const KI_W = konst('KI_W'), KI_RESEARCH_TAG = konst('KI_RESEARCH_TAG');
   const WONDER_KEYS = konst('WONDERS').map(w => w.k);
   const WONDER_IDX = Object.fromEntries(WONDER_KEYS.map((k, i) => [k, i]));
@@ -128,13 +138,16 @@ function makeFeatures(E, konst) {
   const SEAT_NAMES = ['present', 'dead', 'cur', 'turnPos', 'resSci', 'resFood', 'resCoins', 'incSci',
     'incFood', 'incCoins', 'power', 'pop', 'econProgress', 'cities', 'armies', 'techs', 'capitalsTaken',
     'freeArmies', 'backPicks', 'wonders', 'powerOf', 'claim',
-    ...CIV_KEYS.map(k => 'civ:' + k), ...ABILS.map(k => 'abil:' + k),
+    ...CIV_KEYS.map(k => 'civ:' + k), 'civ:other', ...ABILS.map(k => 'abil:' + k), 'abil:other',
     ...TECH_KEYS.map(k => 'tech:' + k), ...TECH_KEYS.map(k => 'avail:' + k),
     ...WONDER_KEYS.map(k => 'wonderOwn:' + k), 'wonderCost', 'cultureWin',
     // v101-v105 rules: free claims this round (Kolonialismus), copy ways still open this round,
     // free techs left in the game and whether one can be taken this round (Greece)
     'claimsLeft', 'copyOpen:internet', 'copyOpen:spionage', 'copyOpen:kundschafterei',
-    'freeTechsLeft', 'freeTechNow'];
+    'freeTechsLeft', 'freeTechNow',
+    // v111/v112: next army's price (Vikings, Aztecs, Nationalismus/Demokratie), China's income
+    // still open, cities can't be founded (Venice), growth free (Venice)
+    'armyCost', 'incomeNowOpen', 'noFound', 'growFree'];
   const SEAT_F = SEAT_NAMES.length;
   const GAME_NAMES = ['round', 'players', 'duel', 'marathon', 'wonders', 'events', 'claims', 'worldPop',
     'evEasy', 'nukeBan', 'barbarians', ...EVENT_KEYS.map(k => 'event:' + k),
@@ -169,10 +182,10 @@ function makeFeatures(E, konst) {
     out[i++] = (S.wonders || []).filter(x => x.owner === pi).length / 3;
     out[i++] = E.powerOf ? E.powerOf(S, pi) / 20 : 0;
     out[i++] = (S.claims || []).some(c => c.pi === pi) ? 1 : 0;
-    const ci = CIV_KEYS.indexOf(p.civ); if (ci >= 0) out[i + ci] = 1; i += CIV_KEYS.length;
+    const ci = CIV_KEYS.indexOf(p.civ); out[i + (ci >= 0 ? ci : CIV_KEYS.length)] = 1; i += CIV_KEYS.length + 1;
     // one ability, or the two drafted ones in the marathon
-    for (const a of abilitiesOf(p)) { const ai = ABILS.indexOf(a); if (ai >= 0) out[i + ai] = 1; }
-    i += ABILS.length;
+    for (const a of abilitiesOf(p)) { const ai = ABILS.indexOf(a); out[i + (ai >= 0 ? ai : ABILS.length)] = 1; }
+    i += ABILS.length + 1;
     for (const k in p.techs) if (k in TECH_IDX) out[i + TECH_IDX[k]] = 1; i += NT;
     for (const k in p.avail) if (k in TECH_IDX && p.avail[k]) out[i + TECH_IDX[k]] = 1; i += NT;
     for (const x of (S.wonders || [])) if (x.owner === pi && x.k in WONDER_IDX) out[i + WONDER_IDX[x.k]] = 1;
@@ -185,6 +198,11 @@ function makeFeatures(E, konst) {
     for (const k of ['internet', 'spionage', 'kundschafterei']) out[i++] = open.includes(k) ? 1 : 0;
     out[i++] = freeTechsLeft && isAbil(p, 'gratistech') ? freeTechsLeft(p) / 2 : 0;
     out[i++] = freeTechOptions ? (freeTechOptions(S, pi).length ? 1 : 0) : 0;
+    out[i++] = armyCost ? armyCost(S, pi) / 20 : 0;
+    out[i++] = incomeNowOpen && incomeNowOpen(p) ? 1 : 0;
+    out[i++] = p.civ === 'venedig' ? 1 : 0;        // engine isVenice: foundSiteError refuses
+    const c0 = citiesOf(S, pi)[0], gp = growPrice && c0 ? growPrice(S, pi, c0) : null;
+    out[i++] = gp && !gp.food && !gp.coins ? 1 : 0;
   }
 
   // ---------------------------------------------------------------- victory progress

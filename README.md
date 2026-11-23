@@ -230,6 +230,50 @@ finds the engine in `multiplayer-server/HochCiv/js` or `runs/engines/v110`. `bri
 7 of 16 against KI schwer on v110 (v108: 10), `tests/test_rush.py` now asks for a third.
 ppo25 (`runs/queue19.sh`) fine-tunes v5 on v110.
 
+## Engine v112 (2026-11-23)
+
+v111/v112 bring eight experimental nations (`EXP_CIVS`: Rome with the Legion, +50 % power per
+adjacent own army, and Via Appia; Venice, no cities, free growth, 3 free claims per round; Aztecs
+and Egypt with wonders; Germany, Maya, China with `collectIncomeNow`, USA), 5 coins per sacrificed
+population, and tile maps that ignore the hex option (2 players: tri8 map, fixed seats). Online,
+tile maps start with a placement phase and `S.seed` is no longer sent. The server only offers the
+experimental nations on tile and custom maps, not in marathon or ranked games (`expCivsOn`).
+
+- `bridge/features.js`: the civ and ability one-hots come from a fixed list (all 12 nations), with
+  an "other" slot for unknown ones, plus `armyCost`, `incomeNowOpen`, `noFound`, `growFree`. GLOB_N
+  1651 → 1835. The layout is the same on v107–v112, so the online client can serve old Rundenspiele
+  with the same net (`Brain.on` checks it).
+- `checkpoints/v5x.pt`: v5 widened (`hochciv_ki.widen`), new inputs at zero, so it plays like v5.
+- `bridge/worker.js`: `expCivs` option (draws from `civKeysFor`, not on fixed maps or marathon).
+  `eval.py --exp-civs`, suite `exp` in `eval_modes`, `train_ppo --exp-share`.
+- Online client and panel: host setups with "Experimental nations", join filter for them.
+
+v5x on v112 against KI schwer (suite v2, scale 2, `--base-seed 490000`), v5 on v110 for comparison:
+
+| mode | v5 on v110 | v5x on v112 | fair |
+|---|---|---|---|
+| 2p, plaettchen, wonders | 0.692 | 0.742 | 0.500 |
+| 2p, plaettchen, events hard | 0.642 | 0.679 | 0.500 |
+| 2p, original, wonders, events easy | 0.725 | 0.762 | 0.500 |
+| 3p, customgen, wonders, events hard | 0.533 | 0.508 | 0.333 |
+| 4p, plaettchen, wonders, events hard | 0.450 | 0.492 | 0.250 |
+| 6p, plaettchen | 0.283 | 0.250 | 0.167 |
+| 8p, customgen, wonders | 0.271 | 0.271 | 0.125 |
+| 4p, marathon | 0.525 | 0.450 | 0.250 |
+| 3p, customgen-marathon, wonders | 0.867 | 0.850 | 0.333 |
+| 2p, plaettchen | 0.650 | 0.763 | 0.500 |
+| 4p, customgen | 0.417 | 0.392 | 0.250 |
+| mean relative | 1.732 | 1.724 | |
+
+Suite `online` (rusher of the HardcodedBots main tree, still v110 code): v5 on v110 / v5x on v112
+0.567 / 0.613 in duels against the rusher, 0.738 / 0.721 against KI schwer, 0.500 / 0.444 in 3p
+(+ KI); mean relative 1.369 / 1.333, all within the 95 % intervals. Suite `exp` (experimental
+nations in the draw), v5x: 0.683 in duels, 0.681 with wonders, 0.475 in 3p custom, 0.483 in 4p;
+mean relative 1.522, below the 1.72 of the normal modes.
+
+ppo26 (`runs/queue20.sh`) fine-tunes v5x on v112, mix online with the experimental nations in
+35 % of the games, gate against v5x. `checkpoints/ppo25/best.pt` (v110, gate failed) is kept.
+
 ## v3 (production model from 2026-11-03 to 2026-11-06)
 
 `checkpoints/v3.pt` = run B' (`checkpoints/ppo4/best.pt`, iteration 80): PPO from v2 on the v2 mix
