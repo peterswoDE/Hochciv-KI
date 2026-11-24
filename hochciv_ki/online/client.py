@@ -561,6 +561,10 @@ class Conn:
         self.connect()
 
     def call(self, event, data, timeout=30):
+        if not self.sio.connected and not self.closing:
+            # the socket is gone without a disconnect event we act on (e.g. a reconnect that
+            # failed half way): ask next_event to reconnect instead of failing every call
+            self.events.put(("disconnect", self.sio))
         res = self.sio.call(event, data, timeout=timeout)
         if isinstance(res, dict) and res.get("error"):
             raise RuntimeError(f"{event}: {res['error']}")
@@ -582,7 +586,9 @@ class Conn:
             except Exception as e:  # noqa: BLE001 - try again later
                 self.log.warning("reconnect failed (%s), next try in 30 s", e)
                 time.sleep(30)
-                self.events.put((ev, data))
+                # _connect has already replaced self.sio: the retry must name the new socket,
+                # or the check above ignores it and the client stays offline for good
+                self.events.put((ev, self.sio))
         return ev, data
 
     def game_of(self, args):

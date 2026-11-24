@@ -443,6 +443,59 @@ def test_experimental_nations_in_configs():
     assert join_filter(dict(j, exp_civs=False), stored) == "experimental nations"
 
 
+def test_a_failed_reconnect_is_tried_again():
+    """A reconnect that fails after _connect replaced the socket must be retried. The retry
+    used to name the old socket, next_event ignored it, and the client stayed offline (every
+    call: '/ is not a connected namespace') until someone restarted it."""
+    import queue as q
+    from hochciv_ki.online import client as cl
+
+    class Sock:
+        def __init__(self, up):
+            self.connected = up
+
+        def disconnect(self):
+            self.connected = False
+
+        def call(self, *a, **kw):
+            if not self.connected:
+                raise RuntimeError("/ is not a connected namespace.")
+            return {}
+
+    acc = SimpleNamespace(check_login=lambda: False)
+    c = Conn(SimpleNamespace(acc=acc, brain=None), "test")
+    tries = []
+
+    def connect(tries_=4):
+        tries.append(1)
+        c.sio, c.closing = Sock(len(tries) > 1), False   # the first reconnect fails
+        if len(tries) == 1:
+            raise ConnectionError("server busy")
+    c.connect = connect
+    sleep, cl.time.sleep = cl.time.sleep, lambda s: None
+    try:
+        c.sio = Sock(False)
+        c.events.put(("disconnect", c.sio))
+        c.next_event()                   # reconnect fails, the retry is queued
+        c.next_event()                   # ... and taken: the second reconnect succeeds
+        assert len(tries) == 2 and c.sio.connected
+        # a socket that dropped without an event: the next call queues the reconnect
+        c.sio.connected = False
+        try:
+            c.call("x", {})
+        except RuntimeError:
+            pass
+        c.next_event()
+        assert len(tries) == 3 and c.sio.connected
+        try:
+            c.events.get_nowait()
+            raise AssertionError("no further reconnect may be queued")
+        except q.Empty:
+            pass
+    finally:
+        cl.time.sleep = sleep
+
+
 def main():
     logging.disable(logging.CRITICAL)
     tests = [(k, v) for k, v in globals().items() if k.startswith("test_")]
