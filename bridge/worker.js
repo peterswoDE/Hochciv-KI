@@ -462,6 +462,25 @@ function fork(a) {
   return Object.assign({ gid }, status(f));
 }
 
+/* A new game from a saved position: a state of an online game the agent lost (the client keeps
+   them, train_ppo --loss-dir). Copied like fork with a new seed and the next round's event
+   rolled again; seat `pi` is the agent, every other human seat KI schwer, KI and bot seats stay. */
+function startFrom(a) {
+  const S = E.kiClone(a.state, a.seed | 0);
+  delete S.kiSim;
+  S.evNext = null;
+  const pi = a.pi;
+  if (!S.players[pi]) throw new Error('start_from: no seat ' + pi);
+  S.players.forEach((p, i) => {
+    if (i === pi) { p.kind = 'human'; p.kiLevel = 'schwer'; } else if (p.kind === 'human') { p.kind = 'ki'; p.kiLevel = 'schwer'; }
+  });
+  const g = { S, agents: new Set([pi]), rush: null, turn: null };
+  const gid = a.gid ?? (games.size ? Math.max(...games.keys()) + 1 : 1);
+  games.set(gid, g);
+  runOthers(g);
+  return Object.assign({ gid }, status(g));
+}
+
 /* Online "end": position armies and use picks (recorded), then the server's endTurn. */
 function endOnline(g) {
   const S = g.S, pi = S.cur, t = turnCtx(g);
@@ -565,6 +584,7 @@ const handlers = {
   },
   status: a => status(game(a)),
   fork: a => fork(a),
+  start_from: a => startFrom(a),
   // victory progress of every seat by path (calibrate_phi.py)
   progress: a => ({ progress: FEAT.progress(game(a).S) }),
   close: a => { games.delete(a.gid); return {}; },

@@ -57,6 +57,7 @@ from ..bridge import Bridge
 from ..env import decode_obs
 from ..eval import agent_factory
 from . import civpick
+from .positions import Positions
 
 log = logging.getLogger("hochciv-ki")
 
@@ -516,6 +517,13 @@ class Conn:
         self.sio = None
         self.closing = False         # closed on purpose: a disconnect is no reason to reconnect
 
+    def positions(self, what, key, *args):
+        """Positions.record / finish for game `key` (keys get the account name: two bots on
+        one runs folder), if the Manager saves positions."""
+        pos = getattr(self.mgr, "positions", None)
+        if pos is not None and key is not None:
+            getattr(pos, what)(f"{getattr(self.acc, 'name', None)}-{key}", *args)
+
     def connect(self, tries=4):
         """Open the socket. The first request may take a while on a slow network (engine.io's
         default timeout is 5 s): longer timeout, a few tries with a pause in between."""
@@ -631,6 +639,7 @@ class Conn:
         server refused to end the turn: the caller has to try again. `brain`: the one of the
         game's engine, if it has its own."""
         brain = brain or self.brain.on(None)
+        self.positions("record", key, state, me, getattr(brain, "version", None))
         rejected, sent, tags = 0, 0, []
         for _ in range(80):
             tag, actions = brain.next_actions(state, me, key)
@@ -880,6 +889,9 @@ class LiveGame(Conn):
                 if self.result:
                     self.log.info("winner: %s (%s)", " and ".join(self.result["winners"]),
                                   "won" if self.result["won"] else "lost")
+                self.positions("finish", self.g.get("sessionId"), (self.result or {}).get("won"))
+            elif self.g:
+                self.positions("finish", self.g.get("sessionId"), None)
             self.drop("over" if ev == "game:over" else "left", why)
         elif ev == "connect" and not self.connected:
             self.connected = True
@@ -1085,6 +1097,9 @@ class Rundenspiele(Conn):
         self.last_poll = time.time()
         lst = self.acc.get("/api/async").json()
         self.mine, self.open = lst.get("mine", []), lst.get("open", [])
+        for s in lst.get("ended") or []:        # finished since: lost ones keep their positions
+            if s.get("id") is not None:
+                self.positions("finish", s["id"], s.get("won"))
         st = self.mgr.settings
         j = st["join"]
         if j["on"] and j["async"]:
@@ -1325,6 +1340,7 @@ class Manager:
         self.rs = self.mm = None
         self.logs = LogBuffer()
         log.addHandler(self.logs)
+        self.positions = None            # Positions: the bot's states, lost games for training
 
     ENGINE_CHECK_EVERY = 300     # seconds between looks at the server's engine version
 
@@ -1548,6 +1564,8 @@ def main():
     ap.add_argument("--open", action="store_true", help="open the control panel in the browser")
     ap.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto",
                     help="where a ckpt: network runs (auto: the GPU if there is one)")
+    ap.add_argument("--positions", default="runs/online_positions",
+                    help="save the bot's positions here, lost games for train_ppo --loss-dir ('' = off)")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     env = read_env(args.config)
@@ -1563,6 +1581,9 @@ def main():
     acc = Account(env["HOCHCIV_URL"], env.get("HOCHCIV_USER"), env.get("HOCHCIV_PASSWORD"),
                   token=env.get("HOCHCIV_TOKEN"), name=env.get("HOCHCIV_NAME"))
     mgr = Manager(acc, brain, args.settings)
+    if args.positions:
+        mgr.positions = Positions(args.positions)
+        mgr.positions.prune()
     if not args.no_panel:
         from .panel import serve
         serve(mgr, args.port, open_browser=args.open)

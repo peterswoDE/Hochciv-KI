@@ -78,10 +78,14 @@ class KiTurnAgent(Agent):
 
 
 def play_game(bridge: Bridge, dims, players, agents: dict, seed, map_key="plaettchen",
-              record=False, max_steps=4000, **kw) -> GameResult:
+              record=False, max_steps=4000, start=None, **kw) -> GameResult:
     """Play one game. `agents` maps a seat index in `players` (lobby order) to an Agent; the
-    bridge reports agent seats in turn order, so they are matched by slot."""
-    st = bridge.reset(players, seed=seed, map=map_key, **kw)
+    bridge reports agent seats in turn order, so they are matched by slot. `start` = {"state",
+    "pi"}: go on from a saved position instead (bridge start_from), `players` unused."""
+    if start:
+        st = bridge.call("start_from", state=start["state"], pi=start["pi"], seed=seed)
+    else:
+        st = bridge.reset(players, seed=seed, map=map_key, **kw)
     gid = st["gid"]
     state = bridge.state(gid)
     slot_of = {i: p["slot"] for i, p in enumerate(state["players"])}

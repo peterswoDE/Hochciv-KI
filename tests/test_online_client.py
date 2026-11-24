@@ -601,6 +601,33 @@ def test_rundenspiel_join_tries_nations_then_random():
     assert posts == ["random"]
 
 
+def test_positions_of_lost_games_are_kept():
+    import tempfile
+    from hochciv_ki.online.positions import Positions, load_lost, read_position
+    from hochciv_ki.online.client import Conn
+    with tempfile.TemporaryDirectory() as d:
+        pos = Positions(d)
+        c = Conn(SimpleNamespace(acc=SimpleNamespace(name="Neura"), brain=None, positions=pos), "test")
+        for rnd in (1, 1, 2, 2, 3):           # one line per round
+            c.positions("record", "G1", {"round": rnd, "cur": 0}, 0, "v112")
+        c.positions("record", "G2", {"round": 1}, 1, "v112")
+        c.positions("record", "G3", {"round": 1}, 0, "v111")
+        c.positions("finish", "G1", False)
+        c.positions("finish", "G2", True)
+        c.positions("finish", "G3", False)
+        refs = load_lost(pos.lost_dir, engine="v112")
+        assert [read_position(r)["round"] for r in refs] == [1, 2, 3], refs
+        assert len(load_lost(pos.lost_dir)) == 4
+        assert not list(pos.open_dir.glob("*.jsonl"))
+        p = read_position(refs[0])
+        assert p["pi"] == 0 and p["engine"] == "v112" and p["key"] == "Neura-G1"
+        # a restarted client goes on where the file ends
+        pos2 = Positions(d)
+        pos2.record("X", {"round": 4}, 0, "v112")
+        Positions(d).record("X", {"round": 4}, 0, "v112")
+        assert sum(1 for _ in open(pos.open_dir / "X.jsonl")) == 1
+
+
 def main():
     logging.disable(logging.CRITICAL)
     tests = [(k, v) for k, v in globals().items() if k.startswith("test_")]

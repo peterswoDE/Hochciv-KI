@@ -33,6 +33,7 @@ from .expert import ExpertAgent, search_phase
 from .hcbot import HcAgent
 from .infer import InferenceServer, ServerAgent
 from .model import collate, load_net, save_net
+from .online.positions import load_lost, read_position
 from .pool import BridgePool
 
 MAPS = {"2": ["plaettchen", "plaettchen", "plaettchen", "original", "customgen"],
@@ -196,6 +197,9 @@ ONLINE_MIXES = ("online", "online_league", "online_marathon")
 # other nations (1.6-2.3). The online client now avoids them where it may choose, but random
 # nations and drafts still deal them. Maps where any nation may sit (not original, not marathon):
 FREE_CIV_MAPS = ("plaettchen", "plaettchen-hex", "customgen")
+# --loss-dir (2026-11-24): the online client keeps the positions of its lost games (one per round,
+# online/positions.py). A share of the games starts from one of them: the learner on its seat,
+# the others KI schwer, a new seed (bridge start_from). Only positions of the pool's engine.
 # mixes with the v2 game options, maps and evaluation suite
 SUITE_MIXES = ("v2", "v3", "vs4", "vs4b", "rush", "rush2", "core", "exploit", "league", "core34", "online", "online_league", "online_marathon")
 RUSH_MIXES = ("rush", "rush2", "core", "league", "core34") + ONLINE_MIXES
@@ -453,6 +457,10 @@ def main():
                     help="nations (comma separated) the learner plays more often, e.g. venedig,rom: its weak ones (civ_eval)")
     ap.add_argument("--civ-focus-p", type=float, default=0.0,
                     help="share of the games on maps with free nations in which a learner seat gets a --civ-focus nation")
+    ap.add_argument("--loss-dir", default="",
+                    help="folder of lost online positions (online client, runs/online_positions/lost)")
+    ap.add_argument("--loss-p", type=float, default=0.0,
+                    help="share of the games that start from a --loss-dir position")
     ap.add_argument("--rush-balance", action="store_true",
                     help="weight the samples so rush games count as much as their share of the games (balance_weights)")
     ap.add_argument("--fixed", default=None, help="network for the V/W seats (mix vs4), e.g. checkpoints/v4x.pt")
@@ -504,8 +512,13 @@ def main():
 
     weights = mix_weights()
     focus = [c.strip() for c in args.civ_focus.split(",") if c.strip()]
+    losses = []                          # (file, line) of lost online positions, set once the engine is known
 
     def make_job():
+        if losses and rng.random() < args.loss_p:
+            pos = read_position(rng.choice(losses))
+            return {"seed": 50_000_000 + next(job_no), "seats": ["L"], "map": None, "opts": {}, "entry": "loss",
+                    "start": {"state": pos["state"], "pi": pos["pi"]}}
         k = rng.choices(range(len(mix)), weights=weights)[0]
         seats = mix[k][1]
         maps = {"v2": MAPS_V2, "v3": MAPS_V3, "vs4": MAPS_V3, "vs4b": MAPS_V3, "rush": MAPS_V3, "rush2": MAPS_V3,
@@ -521,6 +534,9 @@ def main():
 
     with BridgePool(**kw) as pool:
         print(f"engine {pool.version}, {pool.workers} workers, mix {args.mix}, start at iter {st['iter']}", flush=True)
+        if args.loss_dir and args.loss_p > 0:
+            losses[:] = load_lost(args.loss_dir, engine=pool.version)
+            print(f"{len(losses)} lost online positions ({args.loss_dir}), share {args.loss_p}", flush=True)
 
         def play(b, j):
             return collect(b, pool.dims, j, learner_srv, snap_srv, search, fixed_srv)
@@ -665,7 +681,28 @@ class Collector:
         return [self.done.get().result() for _ in range(n)]
 
 
+def collect_from(bridge, dims, job, learner, search=None):
+    """A --loss-dir job: on from a lost online position, the learner on the bot's seat."""
+    S, pi = job["start"]["state"], job["start"]["pi"]
+    slot = S["players"][pi].get("slot", pi)
+    seed = job["seed"] * 31 + slot
+    agents = {slot: ExpertAgent(learner, seed=seed, **search) if search else ServerAgent(learner, seed=seed)}
+    r = play_game(bridge, dims, None, agents, seed=job["seed"], record=True, start=job["start"])
+    recs, n = [], len(S["players"])
+    pis = [p for p, traj in r.trajectories.items() if traj and traj[0][2] is not None]
+    for p in pis:
+        z = r.score(p) if r.over else 1.0 / n
+        recs.append(([(e["sample"], a, e["logp"], e["v"], obs.teacher, obs.prog, obs.pi, obs.round,
+                       e.get("target"), e.get("p"))
+                      for obs, a, e in r.trajectories[p]], z))
+    rel = sum(r.score(p) for p in pis) / len(pis) * n if (pis and r.over) else None
+    return recs, {"vs_ki": False, "vs_rush": False, "score": 0.0, "steps": r.steps,
+                  "entry": "loss", "rel": rel, "rush": False, "snap": False}
+
+
 def collect(bridge, dims, job, learner, snap, search=None, fixed=None):
+    if job.get("start"):
+        return collect_from(bridge, dims, job, learner, search)
     rng = random.Random(job["seed"])
     seats = job["seats"][:]
     rng.shuffle(seats)
