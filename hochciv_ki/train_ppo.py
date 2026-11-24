@@ -192,6 +192,10 @@ MAPS_ONLINE_MARATHON = {**MAPS_ONLINE,
                         "3": MAPS_ONLINE["3"] + ["customgen-marathon"],
                         "4": MAPS_ONLINE["4"] + ["marathon"] * 3 + ["customgen-marathon"]}
 ONLINE_MIXES = ("online", "online_league", "online_marathon")
+# --civ-focus (2026-11-24): civ_eval of v6 found Venedig (0.93) and Rom Legion (1.50) far below the
+# other nations (1.6-2.3). The online client now avoids them where it may choose, but random
+# nations and drafts still deal them. Maps where any nation may sit (not original, not marathon):
+FREE_CIV_MAPS = ("plaettchen", "plaettchen-hex", "customgen")
 # mixes with the v2 game options, maps and evaluation suite
 SUITE_MIXES = ("v2", "v3", "vs4", "vs4b", "rush", "rush2", "core", "exploit", "league", "core34", "online", "online_league", "online_marathon")
 RUSH_MIXES = ("rush", "rush2", "core", "league", "core34") + ONLINE_MIXES
@@ -445,6 +449,10 @@ def main():
                     help="weight the mix entries and the snapshot choice by how badly the learner does (pfsp_factor)")
     ap.add_argument("--exp-share", type=float, default=0.0,
                     help="share of the games with the experimental nations (engine v111+)")
+    ap.add_argument("--civ-focus", default="",
+                    help="nations (comma separated) the learner plays more often, e.g. venedig,rom: its weak ones (civ_eval)")
+    ap.add_argument("--civ-focus-p", type=float, default=0.0,
+                    help="share of the games on maps with free nations in which a learner seat gets a --civ-focus nation")
     ap.add_argument("--rush-balance", action="store_true",
                     help="weight the samples so rush games count as much as their share of the games (balance_weights)")
     ap.add_argument("--fixed", default=None, help="network for the V/W seats (mix vs4), e.g. checkpoints/v4x.pt")
@@ -495,6 +503,7 @@ def main():
         return [m[0] * pfsp_factor(st["pfsp_mix"].get(str(k), 1.0)) for k, m in enumerate(mix)]
 
     weights = mix_weights()
+    focus = [c.strip() for c in args.civ_focus.split(",") if c.strip()]
 
     def make_job():
         k = rng.choices(range(len(mix)), weights=weights)[0]
@@ -503,8 +512,12 @@ def main():
                 "core": MAPS_CORE, "exploit": MAPS_CORE, "league": MAPS_CORE, "core34": MAPS_CORE,
                 "online": MAPS_ONLINE, "online_league": MAPS_ONLINE,
                 "online_marathon": MAPS_ONLINE_MARATHON}.get(args.mix, MAPS)[str(len(seats))]
-        return {"seed": 50_000_000 + next(job_no), "seats": seats, "map": rng.choice(maps),
-                "opts": game_options(rng, args.mix, args.exp_share), "entry": k}
+        job = {"seed": 50_000_000 + next(job_no), "seats": seats, "map": rng.choice(maps),
+               "opts": game_options(rng, args.mix, args.exp_share), "entry": k}
+        if focus and job["map"] in FREE_CIV_MAPS and rng.random() < args.civ_focus_p:
+            job["focus"] = rng.choice(focus)
+            job["opts"]["expCivs"] = True       # the opponents draw from the same pool as online
+        return job
 
     with BridgePool(**kw) as pool:
         print(f"engine {pool.version}, {pool.workers} workers, mix {args.mix}, start at iter {st['iter']}", flush=True)
@@ -669,6 +682,8 @@ def collect(bridge, dims, job, learner, snap, search=None, fixed=None):
             agents[i] = ServerAgent(fixed, greedy=s == "V", seed=job["seed"] * 31 + i)
         elif s == H:
             agents[i] = HcAgent("rusher")
+    if job.get("focus") and learner_slots:
+        players[min(learner_slots)]["civ"] = job["focus"]       # ability drawn from the seed
     r = play_game(bridge, dims, players, agents, seed=job["seed"], map_key=job["map"], record=True,
                   startPlayer=rng.randrange(len(players)), **job.get("opts", {}))
     recs = []
