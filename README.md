@@ -274,6 +274,38 @@ mean relative 1.522, below the 1.72 of the normal modes.
 ppo26 (`runs/queue20.sh`) fine-tunes v5x on v112, mix online with the experimental nations in
 35 % of the games, gate against v5x. `checkpoints/ppo25/best.pt` (v110, gate failed) is kept.
 
+### v6 (production model since 2026-11-24)
+
+`checkpoints/v6.pt` = `checkpoints/ppo26/best.pt`, iteration 100 (v5x fine-tuned on v112, mix
+online, experimental nations in 35 % of the games, `--lr 3e-5`, 120 iterations). Gate against v5x
+on v112 (`runs/gate_ppo26_v112.json`), core modes:
+
+| | ppo26 = v6 | v5x |
+|---|---|---|
+| head to head, 1240 games | **1.096, z = 2.67** | – |
+| KI schwer (core) | **1.666** | 1.564 |
+| suite online (hc:rusher) | **1.510** | 1.335 |
+| suite exp | **1.653** | 1.522 |
+
+Only loss: 3p custom marathon 0.817 against 0.850 (15 games). Since 2026-11-24 both online
+clients play v6.
+
+### Next steps (queue21, 2026-11-24)
+
+- **Nation choice** (`hochciv_ki.civ_eval`, `runs/civ_main_v112.json`, ppo26, 48 seeds, mean rel
+  over duel / 4p vs KI schwer / duel vs hc:rusher): england:gruenden 2.32, usa 2.25,
+  england:kuestenstaedte 2.22, maya 2.17, russland 2.14 … rom:basis 1.50, venedig 0.93. The
+  network plays Venice (no cities) and the Roman legion badly. The clients still join with a
+  random nation.
+- **Throughput:** 14 / 28 / 42 workers collect 80 / 74 / 81 decisions/s. More workers than cores
+  do not help; the GPU wait measured beside a running training was the training's.
+- **exploit2** (from ppo26, `--lr 1.5e-4 --target-kl 0.1`, mix exploit): 1.09–1.25 against
+  ppo26 in training, 0.504 in duels (suite online). Like exploit1, no hole found. It reached
+  1.80–1.96 against KI schwer (ppo26: 1.67).
+- **ppo27** (online_league with exploit2, `--search-frac 0.25`) collapsed: against ppo26 0.84 →
+  0.66 from iteration 10 to 40, 3p against the rusher 0.54 → 0.16. Stopped at iteration 41.
+  Like ppo14, the search phase together with games against a fixed network breaks the policy.
+
 ## v3 (production model from 2026-11-03 to 2026-11-06)
 
 `checkpoints/v3.pt` = run B' (`checkpoints/ppo4/best.pt`, iteration 80): PPO from v2 on the v2 mix
