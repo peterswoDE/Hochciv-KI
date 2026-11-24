@@ -496,6 +496,111 @@ def test_a_failed_reconnect_is_tried_again():
         cl.time.sleep = sleep
 
 
+def test_nation_choice_from_the_table():
+    from hochciv_ki.online import civpick
+    sc = {"england:gruenden": 2.3, "england:basis": 2.0, "venedig:basis": 0.9, "rom:viaappia": 1.9, "rom:basis": 1.5}
+    assert civpick.ranked_civs(sc)[0] == ("england", "gruenden")
+    assert civpick.ranked_civs(sc, marathon=True)[0] == ("england", "basis")
+    assert civpick.ranked_civs(sc)[-1] == ("venedig", "basis")
+    # a nation the table doesn't know (a later engine): median score, ability random, no crash
+    assert civpick.best_ability("atlantis", sc) == ("random", 1.9)
+    d = {"mode": "draft", "noAbility": False, "cur": 1,
+         "pool": [{"id": "venedig", "civ": "venedig", "ability": None, "left": 1},
+                  {"id": "england", "civ": "england", "ability": None, "left": 0},
+                  {"id": "rom", "civ": "rom", "ability": None, "left": 1},
+                  {"id": "atlantis", "civ": "atlantis", "ability": None, "left": 1}]}
+    assert civpick.draft_pick(d, sc) == ("rom", "viaappia")
+    rd = {"mode": "randomDraft", "pool": [{"id": "r0", "civ": "rom", "ability": "basis", "left": 1},
+                                          {"id": "r1", "civ": "venedig", "ability": "basis", "left": 1}]}
+    assert civpick.draft_pick(rd, sc) == ("r0", None)
+    assert civpick.draft_pick({"pool": []}, sc) is None
+    assert civpick.civ_mode({"randomCivs": True}) == "random" and civpick.civ_mode({}) == "fixed"
+    assert civpick.ranked_civs()          # the shipped table loads
+
+
+def test_live_lobby_takes_the_best_free_nation():
+    mgr = SimpleNamespace(acc=SimpleNamespace(name="Neura"), brain=FakeBrain(), settings={})
+    g = LiveGame(mgr, lobby={})
+    g.phase = "lobby"
+    g.g = {"sessionId": "S1", "lobbyIndex": 1, "cfg": {"mapKey": "0"},
+           "players": [{"index": 0, "name": "Hans", "civ": "england", "ability": "basis"},
+                       {"index": 1, "name": "Neura", "civ": "random", "ability": "random"}]}
+    sent = []
+
+    def call(event, data, timeout=30):
+        sent.append((event, data))
+        if data.get("civ") == "usa":
+            raise RuntimeError("lobby:player:update: Diese Nation gibt es in diesem Spiel nicht.")
+        return {"ok": True}
+    g.call = call
+    g.live_choose_civ()
+    civs = [d["civ"] for _, d in sent if "civ" in d]
+    assert "england" not in civs, civs                 # taken by Hans
+    assert civs[0] == "usa" and civs[-1] not in ("usa", "england"), civs
+    n = len(sent)
+    g.live_choose_civ()                                # sits on its choice: nothing more
+    assert len(sent) == n
+    g.g["cfg"] = {"mapKey": "0", "civMode": "draft"}
+    g.g["players"][1]["civ"] = "random"
+    g.live_choose_civ()
+    assert len(sent) == n                              # a draft: no lobby choice
+
+
+def test_nation_draft_live_and_async():
+    mgr = SimpleNamespace(acc=SimpleNamespace(name="Neura"), brain=FakeBrain(), settings={})
+    g = LiveGame(mgr, lobby={})
+    g.g = {"sessionId": "S1", "lobbyIndex": 0}
+    sent = []
+    g.call = lambda event, data, timeout=30: sent.append((event, data)) or {"ok": True}
+    pool = [{"id": "venedig", "civ": "venedig", "ability": None, "left": 1},
+            {"id": "england", "civ": "england", "ability": None, "left": 1}]
+    seats = [{"index": 0, "name": "Hans"}, {"index": 1, "name": "Neura"}]
+    g.handle("civdraft:update", {"mode": "draft", "cur": 0, "pool": pool, "seats": seats, "noAbility": False})
+    assert not sent                                    # Hans picks first
+    g.handle("civdraft:update", {"mode": "draft", "cur": 1, "pool": pool, "seats": seats, "noAbility": False})
+    assert sent and sent[0][0] == "civdraft:pick" and sent[0][1]["id"] == "england", sent
+
+    server = FakeServer(dict(view("A"), status="civdraft", mySlot=2,
+                             civdraft={"mode": "draft", "cur": 2, "noAbility": True, "pool": pool}))
+    calls = []
+    orig = server.call
+
+    def scall(client, event, data):
+        if event == "async:civdraft":
+            calls.append(data)
+            return {"ok": True}
+        return orig(client, event, data)
+    server.call = scall
+    FakeRundenspiele(server, FakeBrain()).open_game("A")
+    assert calls == [{"id": "A", "pick": "england", "ability": None}], calls
+
+
+def test_rundenspiel_join_tries_nations_then_random():
+    rs = FakeRundenspiele(FakeServer(), FakeBrain())
+    posts = []
+
+    class R:
+        def __init__(self, body):
+            self.body, self.ok, self.status_code, self.headers = body, True, 200, {"content-type": "application/json"}
+
+        def json(self):
+            return self.body
+
+    def post(url, json=None):
+        posts.append(json["civ"])
+        return R({"error": "Diese Nation ist schon vergeben."} if json["civ"] != "random" else {"ok": True})
+    rs.acc = SimpleNamespace(post=post)
+    rs.refused = {}
+    game = {"id": "G", "config": {"mapKey": "0", "civMode": "fixed"},
+            "seats": [{"kind": "human", "civ": "rom", "userId": None}, {"kind": "human", "civ": "england", "userId": 7},
+                      {"kind": "human", "civ": "venedig", "userId": None}]}
+    assert rs.join("G", game=game)
+    assert posts == ["rom", "venedig", "random"], posts
+    posts.clear()
+    assert rs.join("G", game={"config": {"civMode": "random"}})
+    assert posts == ["random"]
+
+
 def main():
     logging.disable(logging.CRITICAL)
     tests = [(k, v) for k, v in globals().items() if k.startswith("test_")]

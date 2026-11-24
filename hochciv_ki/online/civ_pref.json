@@ -1,0 +1,26 @@
+{
+ "source": "civ_eval of v6 (ppo26) on engine v112, 48 seeds, modes duel/four/rush, mean rel",
+ "scores": {
+  "england:gruenden": 2.319,
+  "usa:basis": 2.25,
+  "england:kuestenstaedte": 2.222,
+  "maya:basis": 2.167,
+  "russland:basis": 2.139,
+  "griechenland:rueckschau": 2.083,
+  "england:basis": 2.083,
+  "russland:siedler": 2.076,
+  "russland:wachstum": 2.069,
+  "griechenland:gratistech": 1.972,
+  "aegypten:basis": 1.958,
+  "griechenland:basis": 1.917,
+  "rom:viaappia": 1.917,
+  "wikinger:armeemacht": 1.806,
+  "deutschland:basis": 1.701,
+  "wikinger:basis": 1.694,
+  "china:basis": 1.639,
+  "azteken:basis": 1.639,
+  "wikinger:kampfertrag": 1.528,
+  "rom:basis": 1.5,
+  "venedig:basis": 0.931
+ }
+}

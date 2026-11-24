@@ -56,6 +56,7 @@ import socketio
 from ..bridge import Bridge
 from ..env import decode_obs
 from ..eval import agent_factory
+from . import civpick
 
 log = logging.getLogger("hochciv-ki")
 
@@ -504,7 +505,8 @@ class Conn:
 
     EVENTS = ("game:start", "state:update", "placement:start", "draft:update", "game:over", "session:kicked",
               "async:update", "match:found", "match:ready", "match:cancelled", "turn:timeout",
-              "lobby:player:updated", "lobby:config:update", "session:rematch", "player:joined", "player:left")
+              "lobby:player:updated", "lobby:config:update", "session:rematch", "player:joined", "player:left",
+              "civdraft:update")
 
     def __init__(self, mgr, tag):
         self.mgr, self.acc, self.brain = mgr, mgr.acc, mgr.brain
@@ -798,6 +800,8 @@ class LiveGame(Conn):
                 self.drop("left", f"lobby: {why}")
                 return
         self.log.info("in lobby %s (seat %s)", session_id, ack.get("playerIndex"))
+        if self.phase == "lobby":
+            self.guarded(self.live_choose_civ)
         if self.mgr.settings["greeting"]:
             try:
                 self.call("chat:send", {"kind": "text", "text": self.mgr.settings["greeting"]})
@@ -852,14 +856,22 @@ class LiveGame(Conn):
             self.guarded(self.live_draft, data)
         elif ev in ("player:joined", "player:left") and self.g and data:
             self.g["players"] = data.get("players", self.g.get("players"))
+        elif ev == "civdraft:update" and self.g and data:
+            self.phase = "civdraft"
+            self.guarded(self.live_civdraft, data)
         elif ev == "lobby:player:updated" and self.g:
             self.g["players"] = data if isinstance(data, list) else data.get("players", data)
+            if self.phase == "lobby":
+                self.guarded(self.live_choose_civ)
         elif ev == "lobby:config:update" and self.g:
             self.g["cfg"] = data
+            self.g.pop("civ_bad", None)            # e.g. the experimental nations switched on or off
             why = config_ok(data)
             if why and self.kind != "host":
                 self.mgr.refuse(self.g["sessionId"])
                 self.drop("left", f"lobby changed to {why}")
+            elif self.phase == "lobby":
+                self.guarded(self.live_choose_civ)
         elif ev in ("game:over", "session:kicked"):
             why = (data or {}).get("how") or (data or {}).get("reason") or ev
             self.log.info("game ended: %s", why)
@@ -902,6 +914,52 @@ class LiveGame(Conn):
         o, cell = brain.place(data["plan"], me, players, setup, data["seed"])
         self.call("placement:action", {"o": o, "cell": cell})
         self.log.info("placed start tile o=%s cell=%s", o, cell)
+
+    def live_choose_civ(self):
+        """Lobby with free choice (civMode fixed): take the strongest nation (civ_pref.json) that
+        nobody else has and the lobby offers. Runs again on every lobby change; once the bot sits
+        on its choice it sends nothing."""
+        g = self.g
+        if not g or civpick.civ_mode(g.get("cfg")) != "fixed" or not isinstance(g.get("players"), list):
+            return
+        players = g["players"]
+        me = next((p for p in players if p.get("name") == self.acc.name), None)
+        if me is None:
+            me = next((p for p in players if p.get("index") == g.get("lobbyIndex")), None)
+        if me is None:
+            return
+        others = {p.get("civ") for p in players if p is not me} - set(civpick.RANDOM)
+        bad = g.setdefault("civ_bad", set())
+        for civ, ab in civpick.ranked_civs(marathon=civpick.is_marathon(g.get("cfg"))):
+            if civ in others or civ in bad:
+                continue
+            if me.get("civ") == civ and me.get("ability") == ab:
+                return
+            try:
+                # the server resets the ability with a new nation (sessions.updatePlayer)
+                if me.get("civ") != civ:
+                    self.call("lobby:player:update", {"civ": civ})
+                    me["civ"], me["ability"] = civ, "basis"
+                if ab != "basis":
+                    self.call("lobby:player:update", {"ability": ab})
+            except RuntimeError as e:          # not offered in this lobby (experimental nation)
+                bad.add(civ)
+                self.log.debug("nation %s refused: %s", civ, e)
+                continue
+            me["civ"], me["ability"] = civ, ab
+            self.log.info("nation %s (%s)", civ, ab)
+            return
+
+    def live_civdraft(self, data):
+        """Nation draft: pick the strongest entry left when it is our turn."""
+        seats = data.get("seats") or []
+        me = next((s.get("index") for s in seats if s.get("name") == self.acc.name), self.g.get("lobbyIndex"))
+        if data.get("cur") is None or data.get("cur") != me:
+            return
+        pick = civpick.draft_pick(data)
+        if pick:
+            self.call("civdraft:pick", {"id": pick[0], "ability": pick[1]})
+            self.log.info("nation draft: %s%s", pick[0], f" ({pick[1]})" if pick[1] else "")
 
     def live_draft(self, draft):
         pick = self.brain.on(None).draft_pick(draft, self.g["lobbyIndex"], self.acc.name)
@@ -1053,12 +1111,37 @@ class Rundenspiele(Conn):
         for s in due:
             self.guarded(self.open_game, s["id"])
 
-    def join(self, gid, picked=False):
-        r = self.acc.post(f"/api/async/{gid}/join", json={"civ": "random", "ability": "random"})
-        if r.ok and not r.json().get("error"):
-            self.log.info("joined Rundenspiel %s%s", gid, " (picked)" if picked else "")
-            return True
-        err = (r.json() if r.headers.get("content-type", "").startswith("application/json") else {}).get("error") or r.status_code
+    CIV_REFUSALS = ("Unbekannte Nation.", "Diese Nation ist schon vergeben.", "Unbekannte Fähigkeit.")
+
+    def civ_choices(self, game):
+        """[(civ, ability)] to try when joining Rundenspiel `game` (its summary), best first,
+        "random" last. Only civMode fixed lets the bot choose; on a fixed map the free seats
+        already have their nations."""
+        game = game or {}
+        cfg = game.get("config") or {}
+        if civpick.civ_mode(cfg) != "fixed":
+            return [("random", "random")]
+        seats = game.get("seats") or []
+        ranked = civpick.ranked_civs(marathon=civpick.is_marathon(cfg))
+        free = [s.get("civ") for s in seats if s.get("kind") == "human" and not s.get("userId")]
+        taken = {s.get("civ") for s in seats if s.get("userId")}
+        if free and all(free):
+            ranked = [x for x in ranked if x[0] in free]
+        ranked = [x for x in ranked if x[0] not in taken]
+        return ranked[:5] + [("random", "random")]
+
+    def join(self, gid, picked=False, game=None):
+        game = game or next((s for s in self.open if s.get("id") == gid), None)
+        err = None
+        for civ, ab in self.civ_choices(game):
+            r = self.acc.post(f"/api/async/{gid}/join", json={"civ": civ, "ability": ab})
+            body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+            if r.ok and not body.get("error"):
+                self.log.info("joined Rundenspiel %s%s as %s", gid, " (picked)" if picked else "", civ)
+                return True
+            err = body.get("error") or r.status_code
+            if civ == "random" or err not in self.CIV_REFUSALS:
+                break
         if r.status_code < 500:
             self.refused[gid] = f"refused: {err}"    # e.g. no room for another player-bot
         self.log.info("Rundenspiel %s refused us: %s", gid, err)
@@ -1083,8 +1166,12 @@ class Rundenspiele(Conn):
         keys = ("mapKey", "playerCount", "kiCount", "difficulty", "civMode", "isPublic", "playerBotLimit", "ranked")
         cfg = dict({k: setup.get(k) for k in keys}, **host_options(setup), playerBots=True)
         cfg["ranked"] = bool(cfg["ranked"])
-        r = self.acc.post("/api/async", json={"config": cfg, "civ": "random", "ability": "random"})
-        body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        civ, ab = self.civ_choices({"config": cfg})[0]
+        for civ, ab in ([(civ, ab)] if civ == "random" else [(civ, ab), ("random", "random")]):
+            r = self.acc.post("/api/async", json={"config": cfg, "civ": civ, "ability": ab})
+            body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+            if r.ok and not body.get("error"):
+                break                   # a nation this game doesn't offer: host on "random"
         if not r.ok or body.get("error"):
             self.host_retry = time.time() + 600
             self.mgr.note = f"Rundenspiel not created: {body.get('error') or r.status_code}"
@@ -1133,6 +1220,14 @@ class Rundenspiele(Conn):
             o, cell = brain.place(pl["plan"], view["mySlot"], pl["players"], pl.get("setup"), 1)
             self.call("async:place", {"id": gid, "o": o, "cell": cell})
             self.log.info("%s: placed start tile", gid)
+            return
+        if view.get("status") == "civdraft" and view.get("civdraft"):
+            cd = view["civdraft"]
+            if cd.get("cur") is not None and cd.get("cur") == view.get("mySlot"):
+                pick = civpick.draft_pick(cd)
+                if pick:
+                    self.call("async:civdraft", {"id": gid, "pick": pick[0], "ability": pick[1]})
+                    self.log.info("%s: nation draft %s%s", gid, pick[0], f" ({pick[1]})" if pick[1] else "")
             return
         if view.get("status") == "draft" and view.get("draft"):
             pick = brain.draft_pick(view["draft"], view["mySlot"])
