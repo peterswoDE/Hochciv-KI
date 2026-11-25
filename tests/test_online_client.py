@@ -628,6 +628,16 @@ def test_positions_of_lost_games_are_kept():
         assert sum(1 for _ in open(pos.open_dir / "X.jsonl")) == 1
 
 
+def test_marathon_games_use_the_marathon_agent():
+    from hochciv_ki.online.client import Brain
+    b = Brain.__new__(Brain)
+    b.agent, b.marathon_agent = "main", "mara"
+    assert b.agent_for({"marathon": True}) == "mara"
+    assert b.agent_for({"marathon": False}) == "main" and b.agent_for({}) == "main"
+    b.marathon_agent = None
+    assert b.agent_for({"marathon": True}) == "main"
+
+
 def main():
     logging.disable(logging.CRITICAL)
     tests = [(k, v) for k, v in globals().items() if k.startswith("test_")]

@@ -20,6 +20,12 @@ Rules (all must hold):
   4. with the rush evaluations: against the rusher the candidate's mean relative score is at
      least the production one's minus 0.05 (the rush is how people beat v4 online)
 
+  5. with --marathon (since ppo31): in no marathon mode against KI schwer is the candidate
+     significantly below production (score difference below -1.645 standard errors of the
+     difference). ppo28-30 passed rules 1-4 while 4p marathon fell from 0.525 to 0.275; the
+     online client then plays marathon games with --marathon-agent (the production network).
+     The verdict file also says "core" (rules 1-4) and "marathon" (rule 5) separately.
+
 With --core (since ppo18) rules 1 and 2 count only the core modes (2 to 4 empires, no
 marathon); rule 3 still looks at every mode, so 5-8 empires and marathon may not collapse.
 
@@ -52,6 +58,23 @@ def pooled(res):
 
 def mean_rel(res):
     return sum(r["rel"] for r in res) / len(res)
+
+
+def marathon_check(cand_ki, prod_ki):
+    """(ok, report lines): rule 5."""
+    out, ok = [], True
+    prod = {r["mode"]: r for r in prod_ki}
+    for r in cand_ki:
+        q = prod.get(r["mode"])
+        if not q or "marathon" not in r["mode"]:
+            continue
+        se = math.hypot(r["ci95"], q["ci95"]) / 1.96
+        d = r["score"] - q["score"]
+        good = d >= -1.645 * se
+        ok &= good
+        out.append(f"{'ok  ' if good else 'FAIL'} marathon {r['mode']}: {r['score']:.3f}, production {q['score']:.3f} "
+                   f"(difference {d:+.3f}, may not be below {-1.645 * se:.3f})")
+    return ok, out
 
 
 def gate(h2h, cand_ki, prod_ki, cand_rush=None, prod_rush=None, core=False):
@@ -104,17 +127,24 @@ def main():
     ap.add_argument("--prod-rush", default=None, help="production against the rusher, same seeds")
     ap.add_argument("--core", action="store_true",
                     help="head to head and KI schwer on the core modes only (2-4 empires, no marathon)")
+    ap.add_argument("--marathon", action="store_true",
+                    help="rule 5: no marathon mode significantly below production")
     ap.add_argument("--json", default=None, help="write the verdict here")
     args = ap.parse_args()
     if bool(args.cand_rush) != bool(args.prod_rush):
         ap.error("--cand-rush and --prod-rush go together")
     rush = (results(args.cand_rush), results(args.prod_rush)) if args.cand_rush else (None, None)
-    ok, lines = gate(results(args.h2h), results(args.cand_ki), results(args.prod_ki), *rush, core=args.core)
+    core_ok, lines = gate(results(args.h2h), results(args.cand_ki), results(args.prod_ki), *rush, core=args.core)
+    mara_ok = True
+    if args.marathon:
+        mara_ok, more = marathon_check(results(args.cand_ki), results(args.prod_ki))
+        lines += more
+    ok = core_ok and mara_ok
     print("\n".join(lines))
-    print("PROMOTE" if ok else "KEEP PRODUCTION")
+    print("PROMOTE" if ok else ("PROMOTE WITHOUT MARATHON (client --marathon-agent)" if core_ok else "KEEP PRODUCTION"))
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:
-            json.dump({"promote": ok, "report": lines}, f, indent=1)
+            json.dump({"promote": ok, "core": core_ok, "marathon": mara_ok, "report": lines}, f, indent=1)
     sys.exit(0 if ok else 1)
 
 

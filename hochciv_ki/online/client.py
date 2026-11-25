@@ -348,7 +348,7 @@ class Brain:
     """The local engine copy plus the agent. One turn = repeated (load, observe, act). Shared by
     all games: one decision at a time."""
 
-    def __init__(self, agent_spec, engine_dir=None, device="auto"):
+    def __init__(self, agent_spec, engine_dir=None, device="auto", marathon_spec=None):
         self.bridge = Bridge(engine_dir)
         info = self.bridge.info()
         self.version, self.dims = info["version"], info["dims"]
@@ -361,6 +361,14 @@ class Brain:
             # search: the shortest turn timer is 60 s, and one Brain serves every game
             self.agent.budget = SEARCH_BUDGET
         self.spec = agent_spec
+        # marathon games (S.marathon) with another network: ppo28-30 got better everywhere else
+        # but fell in 4p marathon (promote.py rule 5), so marathon stays on the production one
+        self.marathon_spec = marathon_spec
+        self.marathon_agent = None
+        if marathon_spec and marathon_spec != agent_spec:
+            self.marathon_agent = agent_factory(marathon_spec, device=device)()
+            if getattr(self.marathon_agent, "needs_game", False) and self.marathon_agent.budget is None:
+                self.marathon_agent.budget = SEARCH_BUDGET
         self.lock = threading.Lock()
         self.others = {}                 # engine version -> Brain on that engine's bridge
         self.current = self.version      # the version the server runs now (Manager.check_engine)
@@ -398,12 +406,18 @@ class Brain:
         with self.lock:
             self.bridge.call("load", gid=1, state=state, pi=pi, key=key)
             obs = decode_obs(self.bridge.call("observe", gid=1), self.dims)
-            if getattr(self.agent, "needs_game", False):
-                a, _ = self.agent.act(obs, game=(self.bridge, 1))
+            agent = self.agent_for(state)
+            if getattr(agent, "needs_game", False):
+                a, _ = agent.act(obs, game=(self.bridge, 1))
             else:
-                a, _ = self.agent.act(obs)
+                a, _ = agent.act(obs)
             res = self.bridge.call("step_online", gid=1, i=a)
         return obs.tags[a], [tuple(x) for x in res["actions"]]
+
+    def agent_for(self, state):
+        if self.marathon_agent is not None and (state or {}).get("marathon"):
+            return self.marathon_agent
+        return self.agent
 
     def refuse(self, key, tag):
         """The server refused candidate `tag` of game `key`: not offered again this turn."""
@@ -1475,7 +1489,8 @@ class Manager:
         rs = self.rs
         return {
             "account": {"name": self.acc.name, "isBot": self.acc.is_bot, "url": self.acc.url},
-            "engine": self.brain.on(None).version, "agent": self.brain.spec,
+            "engine": self.brain.on(None).version, "agent": self.brain.spec
+            + (f" (marathon: {self.brain.marathon_spec})" if getattr(self.brain, "marathon_agent", None) else ""),
             "settings": self.settings, "note": self.note,
             "live": [g.info() for g in reversed(self.live)],
             "rundenspiele": [{"id": s.get("id"), "joinCode": s.get("joinCode"), "status": s.get("status"),
@@ -1564,6 +1579,8 @@ def main():
     ap.add_argument("--open", action="store_true", help="open the control panel in the browser")
     ap.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto",
                     help="where a ckpt: network runs (auto: the GPU if there is one)")
+    ap.add_argument("--marathon-agent", default=None,
+                    help="network for marathon games (e.g. the production one when --agent is weaker there)")
     ap.add_argument("--positions", default="runs/online_positions",
                     help="save the bot's positions here, lost games for train_ppo --loss-dir ('' = off)")
     args = ap.parse_args()
@@ -1576,8 +1593,9 @@ def main():
         engine_dir = version and engine_dir_of(version)
     except RuntimeError as e:
         log.error("%s, starting on the default engine", e)
-    brain = Brain(args.agent, engine_dir=engine_dir, device=args.device)
-    log.info("engine %s, agent %s on %s", brain.version, args.agent, brain.device)
+    brain = Brain(args.agent, engine_dir=engine_dir, device=args.device, marathon_spec=args.marathon_agent)
+    log.info("engine %s, agent %s on %s%s", brain.version, args.agent, brain.device,
+             f", marathon games: {args.marathon_agent}" if brain.marathon_agent else "")
     acc = Account(env["HOCHCIV_URL"], env.get("HOCHCIV_USER"), env.get("HOCHCIV_PASSWORD"),
                   token=env.get("HOCHCIV_TOKEN"), name=env.get("HOCHCIV_NAME"))
     mgr = Manager(acc, brain, args.settings)
