@@ -1,0 +1,102 @@
+# All online bots plus one control page (hub) on http://127.0.0.1:8700
+#
+#   cd deploy
+#   docker compose up -d --build        # start / update everything
+#   docker compose logs -f neurabot     # one bot's log
+#   docker compose stop statibot        # stop one bot
+#
+# The bots and the hub share the network namespace of the `net` container, so every bot panel
+# stays on 127.0.0.1:<its port> (as without Docker) and only the hub is published, on the host's
+# 127.0.0.1. A new bot: a service block below (own port, own secret, own data folder), its secret
+# file in secrets/, and an entry in bots.json.
+#
+# Secrets: secrets/<bot>.env (HOCHCIV_URL, HOCHCIV_TOKEN; git-ignored). Each bot gets only its
+# own file, as /run/secrets/bot.env.
+
+name: hochciv-bots
+
+x-bot: &bot
+  restart: unless-stopped
+  network_mode: "service:net"
+  depends_on: [net]
+  init: true
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "5" }
+
+x-ki: &ki
+  <<: *bot
+  build:
+    context: .
+    dockerfile: ki.Dockerfile
+    additional_contexts: { ki: "${KI_DIR:-..}" }
+  image: hochciv-bots/ki
+  deploy:
+    resources:
+      reservations:
+        devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+
+x-hc: &hc
+  <<: *bot
+  build:
+    context: .
+    dockerfile: hcbots.Dockerfile
+    additional_contexts: { hc: "${HCBOTS_DIR:-../../HochCiv-HardcodedBots}" }
+  image: hochciv-bots/hcbots
+
+services:
+  net:
+    image: alpine:3.20
+    command: ["sleep", "infinity"]
+    init: true
+    restart: unless-stopped
+    ports: ["127.0.0.1:${HUB_PORT:-8700}:8700"]
+
+  hub:
+    <<: *bot
+    image: python:3.13-slim-bookworm
+    command: ["python", "-u", "/hub/hub.py"]
+    environment:
+      BOTS_FILE: /config/bots.json
+      HUB_HOSTS: "127.0.0.1:${HUB_PORT:-8700},localhost:${HUB_PORT:-8700}"
+    volumes:
+      - ./hub:/hub:ro
+      - ./bots.json:/config/bots.json:ro
+
+  neurabot:
+    <<: *ki
+    command: [--config, /run/secrets/bot.env, --port, "8765",
+              --agent, ckpt:checkpoints/ppo29/best.pt, --marathon-agent, ckpt:checkpoints/v6.pt,
+              --settings, /data/settings.json, --positions, runs/online_positions]
+    secrets: [{ source: neurabot, target: bot.env }]
+    volumes:
+      - ${KI_DIR:-..}/checkpoints:/app/checkpoints:ro
+      - ${KI_DIR:-..}/runs/online_positions:/app/runs/online_positions
+      - ${SERVER_DIR:-../../multiplayer-server}:/multiplayer-server:ro
+      - ./data/neurabot:/data
+
+  neuranew:
+    <<: *ki
+    command: [--config, /run/secrets/bot.env, --port, "8766",
+              --agent, ckpt:checkpoints/ppo29/best.pt, --marathon-agent, ckpt:checkpoints/v6.pt,
+              --settings, /data/settings.json, --positions, runs/online_positions]
+    secrets: [{ source: neuranew, target: bot.env }]
+    volumes:
+      - ${KI_DIR:-..}/checkpoints:/app/checkpoints:ro
+      - ${KI_DIR:-..}/runs/online_positions:/app/runs/online_positions
+      - ${SERVER_DIR:-../../multiplayer-server}:/multiplayer-server:ro
+      - ./data/neuranew:/data
+
+  statibot:
+    <<: *hc
+    command: [--config, /run/secrets/bot.env, --port, "8780", --bot, rusher,
+              --settings, /data/settings.json]
+    secrets: [{ source: statibot, target: bot.env }]
+    volumes:
+      - ${SERVER_DIR:-../../multiplayer-server}:/multiplayer-server:ro
+      - ./data/statibot:/data
+
+secrets:
+  neurabot: { file: ./secrets/neurabot.env }
+  neuranew: { file: ./secrets/neuranew.env }
+  statibot: { file: ./secrets/statibot.env }
