@@ -5,16 +5,18 @@
 #   docker compose logs -f neurabot     # one bot's log
 #   docker compose stop statibot        # stop one bot
 #
-# One folder per bot, the folder name is the bot's id (= service name below):
+# One folder per bot, everything of that bot in it; the folder name is the bot's id (= service
+# name below):
 #   bots/<id>/bot.json        label, panel port, kind (committed; the hub reads these)
-#   bots/<id>/data/           what the bot writes: settings.json, ... (git-ignored)
-#   secrets/<id>.env          HOCHCIV_URL, HOCHCIV_TOKEN (git-ignored)
-# Secrets live apart from bots/ because the hub mounts bots/: it must not see them. Each bot gets
-# only its own file, as /run/secrets/bot.env.
+#   bots/<id>/bot.env         HOCHCIV_URL, HOCHCIV_TOKEN (git-ignored)
+#   bots/<id>/settings.json   what the bot writes (git-ignored)
+# Each bot mounts only its own folder, as /data. The hub gets only the bot.json files, never a
+# bot.env.
 #
 # The bots and the hub share the network namespace of the `net` container, so every bot panel
 # stays on 127.0.0.1:<its port> (as without Docker) and only the hub is published, on the host's
-# 127.0.0.1. A new bot: its folder and secret, and a service block below (port as in bot.json).
+# 127.0.0.1. A new bot: its folder, a service block below (port as in bot.json) and its bot.json
+# line at the hub.
 
 name: hochciv-bots
 
@@ -70,32 +72,27 @@ services:
       HUB_HOSTS: "127.0.0.1:${HUB_PORT:-8700},localhost:${HUB_PORT:-8700}"
     volumes:
       - ./hub:/hub:ro
-      - ./bots:/config/bots:ro
+      # only the bot.json of each bot (one line per bot), never its bot.env
+      - ./bots/neurabot/bot.json:/config/bots/neurabot/bot.json:ro
+      - ./bots/neuranew/bot.json:/config/bots/neuranew/bot.json:ro
+      - ./bots/statibot/bot.json:/config/bots/statibot/bot.json:ro
 
   neurabot:
     <<: *ki
-    command: [--config, /run/secrets/bot.env, --port, "8765",
+    command: [--config, /data/bot.env, --port, "8765",
               --agent, ckpt:checkpoints/ppo29/best.pt, --marathon-agent, ckpt:checkpoints/v6.pt,
               --settings, /data/settings.json, --positions, runs/online_positions]
-    secrets: [{ source: neurabot, target: bot.env }]
-    volumes: [*checkpoints, *positions, *engines, ./bots/neurabot/data:/data]
+    volumes: [*checkpoints, *positions, *engines, ./bots/neurabot:/data]
 
   neuranew:
     <<: *ki
-    command: [--config, /run/secrets/bot.env, --port, "8766",
+    command: [--config, /data/bot.env, --port, "8766",
               --agent, ckpt:checkpoints/ppo29/best.pt, --marathon-agent, ckpt:checkpoints/v6.pt,
               --settings, /data/settings.json, --positions, runs/online_positions]
-    secrets: [{ source: neuranew, target: bot.env }]
-    volumes: [*checkpoints, *positions, *engines, ./bots/neuranew/data:/data]
+    volumes: [*checkpoints, *positions, *engines, ./bots/neuranew:/data]
 
   statibot:
     <<: *hc
-    command: [--config, /run/secrets/bot.env, --port, "8780", --bot, rusher,
+    command: [--config, /data/bot.env, --port, "8780", --bot, rusher,
               --settings, /data/settings.json]
-    secrets: [{ source: statibot, target: bot.env }]
-    volumes: [*engines, ./bots/statibot/data:/data]
-
-secrets:
-  neurabot: { file: ./secrets/neurabot.env }
-  neuranew: { file: ./secrets/neuranew.env }
-  statibot: { file: ./secrets/statibot.env }
+    volumes: [*engines, ./bots/statibot:/data]

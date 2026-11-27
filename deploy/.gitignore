@@ -1,0 +1,3 @@
+# per bot only bot.json is committed; bot.env (secrets) and what the bot writes stay local
+bots/*/*
+!bots/*/bot.json
