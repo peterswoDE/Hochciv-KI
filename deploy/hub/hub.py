@@ -13,8 +13,8 @@ The bot panels check a per-start token that they write into their page. The hub 
 the page and keeps it to itself: the browser only gets the hub's own token. Like the panels, the
 hub answers only to its own Host header, so other web pages can't steer the bots.
 
-Config (BOTS_FILE, default /config/bots.json):
-    {"bots": [{"id": "neurabot", "label": "NeuraBot", "port": 8765, "kind": "KI"}, ...]}
+Config: one folder per bot under BOTS_DIR (default /config/bots), the folder name is its id:
+    <id>/bot.json   {"label": "NeuraBot", "port": 8765, "kind": "Hochciv-KI", "order": 1}
 """
 from __future__ import annotations
 
@@ -39,13 +39,21 @@ ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 ACTIVE = {"connecting", "lobby", "playing", "placement", "draft", "civdraft"}   # live game phases
 
 
-def load_bots(path):
-    bots = json.loads(Path(path).read_text(encoding="utf-8"))["bots"]
-    seen = set()
+def load_bots(root):
+    """Every <root>/<id>/bot.json, ordered by its "order" (then id)."""
+    bots = []
+    for f in sorted(Path(root).glob("*/bot.json")):
+        b = json.loads(f.read_text(encoding="utf-8"))
+        b["id"] = f.parent.name
+        if not ID_RE.match(b["id"]):
+            raise SystemExit(f"bad bot folder name: {b['id']!r} (a-z, 0-9, - and _)")
+        bots.append(b)
+    if not bots:
+        raise SystemExit(f"no bots in {root} (<id>/bot.json)")
+    if len({int(b["port"]) for b in bots}) != len(bots):
+        raise SystemExit("two bots with the same panel port")
+    bots.sort(key=lambda b: (b.get("order", 100), b["id"]))
     for b in bots:
-        if not ID_RE.match(str(b.get("id", ""))) or b["id"] in seen:
-            raise SystemExit(f"bad or duplicate bot id: {b.get('id')!r}")
-        seen.add(b["id"])
         b["port"] = int(b["port"])
         b.setdefault("label", b["id"])
         b.setdefault("kind", "")
@@ -171,7 +179,7 @@ def bot_page(text, bot, bots, token):
         "}catch(e){}};addEventListener('DOMContentLoaded',()=>{dots();setInterval(dots,15000);});})();</script>"
     )
     text = text.replace("<head>", "<head>" + shim, 1)
-    title = f"<title>{escape(bot['label'])} · Bot hub</title>"
+    title = f"<title>{escape(bot['label'])} Â· Bot hub</title>"
     text = re.sub(r"<title>.*?</title>", lambda m: title, text, count=1, flags=re.S)
     return text.replace("<body>", "<body>" + nav_html(bots, bot["id"]), 1)
 
@@ -254,7 +262,7 @@ def serve(bots, port=8700, bind="0.0.0.0", hosts=None):
 def offline_page(bot, bots, err):
     return (
         '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,'
-        f'initial-scale=1"><title>{escape(bot["label"])} · Bot hub</title><style>:root{{--bg:#f6f3ec;'
+        f'initial-scale=1"><title>{escape(bot["label"])} Â· Bot hub</title><style>:root{{--bg:#f6f3ec;'
         '--ink:#2b2620;--muted:#7a7064;--line:#e4dccd;--chip:#efe7d8;--ok:#2f7d4f;--bad:#a33a2a}'
         '@media (prefers-color-scheme:dark){:root{--bg:#1b1916;--ink:#ece6dc;--muted:#a39a8c;--line:#3a352e;'
         '--chip:#322e28;--ok:#6cc08c;--bad:#e07a68}}body{margin:0;background:var(--bg);color:var(--ink);'
@@ -268,7 +276,7 @@ def offline_page(bot, bots, err):
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    bots = load_bots(os.environ.get("BOTS_FILE", "/config/bots.json"))
+    bots = load_bots(os.environ.get("BOTS_DIR", "/config/bots"))
     port = int(os.environ.get("HUB_PORT", "8700"))
     hosts = [h.strip() for h in os.environ.get("HUB_HOSTS", "").split(",") if h.strip()] or None
     serve(bots, port, os.environ.get("HUB_BIND", "0.0.0.0"), hosts).serve_forever()

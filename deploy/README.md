@@ -3,11 +3,22 @@
 Alle Online-Bots (Hochciv-KI und HochCiv-HardcodedBots) laufen als Container. Eine gemeinsame
 Seite zeigt sie alle und schaltet zwischen ihren Panels um: **http://127.0.0.1:8700**
 
-| Bot      | Code              | Panel-Port (intern) | Secret                 | Daten              |
-|----------|-------------------|---------------------|------------------------|--------------------|
-| NeuraBot | Hochciv-KI        | 8765                | `secrets/neurabot.env` | `data/neurabot/`   |
-| NeuraNew | Hochciv-KI        | 8766                | `secrets/neuranew.env` | `data/neuranew/`   |
-| StatiBot | HardcodedBots     | 8780                | `secrets/statibot.env` | `data/statibot/`   |
+| Bot      | Code          | Panel-Port (intern) | Ordner           | Secret                 |
+|----------|---------------|---------------------|------------------|------------------------|
+| NeuraBot | Hochciv-KI    | 8765                | `bots/neurabot/` | `secrets/neurabot.env` |
+| NeuraNew | Hochciv-KI    | 8766                | `bots/neuranew/` | `secrets/neuranew.env` |
+| StatiBot | HardcodedBots | 8780                | `bots/statibot/` | `secrets/statibot.env` |
+
+Ein Ordner pro Bot, der Ordnername ist die Bot-ID (= Service-Name in `docker-compose.yml`):
+
+```
+deploy/
+  bots/<id>/bot.json     Name, Panel-Port, Art (im Repo; daraus baut der Hub seine Liste)
+  bots/<id>/data/        was der Bot schreibt: settings.json (git-ignoriert)
+  secrets/<id>.env       Zugangsdaten (git-ignoriert)
+```
+
+Die Secrets liegen bewusst nicht in `bots/`: der Hub liest `bots/` und soll sie nicht sehen.
 
 ## Start
 
@@ -45,20 +56,20 @@ keiner Umgebungsvariable und keinem Image.
 - `net` hält das gemeinsame Netz. Bots und Hub hängen daran (`network_mode: service:net`), so
   bleibt jedes Bot-Panel auf `127.0.0.1:<Port>` wie ohne Docker. Nur der Hub ist nach außen
   veröffentlicht, und nur auf `127.0.0.1` des Rechners.
-- `hub/hub.py` liest `bots.json`, zeigt die Übersicht und reicht Seite und API des gewählten Bots
+- `hub/hub.py` liest `bots/*/bot.json`, zeigt die Übersicht und reicht Seite und API des gewählten Bots
   durch. Den Panel-Token der Bots behält er für sich; der Browser sieht nur den des Hubs.
 - Die Bots selbst sind unverändert: dieselben Clients, dieselben Panels.
 - Gemountet (nur lesend): `checkpoints/`, `multiplayer-server` (Engine-Kopien). Schreibend:
-  `data/<bot>/` (Panel-Einstellungen) und bei den KI-Bots `runs/online_positions` (Stellungen
+  `bots/<bot>/data/` (Panel-Einstellungen) und bei den KI-Bots `runs/online_positions` (Stellungen
   verlorener Partien für `train_ppo --loss-dir`).
 
 ## Neuer Bot
 
-1. In `docker-compose.yml` einen Service anlegen (Vorlage: `neuranew` oder `statibot`) mit
-   eigenem `--port`, eigenem Secret und eigenem `data/`-Ordner; das Secret unten unter `secrets:`
-   eintragen.
-2. `secrets/<bot>.env` anlegen.
-3. In `bots.json` eintragen (`id` = Service-Name, `port` = Panel-Port).
+1. Ordner `bots/<id>/` mit `bot.json` anlegen (eigener, freier `port`).
+2. `secrets/<id>.env` anlegen.
+3. In `docker-compose.yml` einen Service `<id>` anlegen (Vorlage: `neuranew` oder `statibot`) mit
+   demselben `--port`, dem Secret und `./bots/<id>/data:/data`; das Secret unten unter
+   `secrets:` eintragen.
 4. `docker compose up -d --build`
 
 ## Ohne GPU

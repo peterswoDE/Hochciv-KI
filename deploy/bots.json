@@ -1,7 +1,0 @@
-{
-  "bots": [
-    { "id": "neurabot", "label": "NeuraBot", "port": 8765, "kind": "Hochciv-KI" },
-    { "id": "neuranew", "label": "NeuraNew", "port": 8766, "kind": "Hochciv-KI" },
-    { "id": "statibot", "label": "StatiBot", "port": 8780, "kind": "HardcodedBots" }
-  ]
-}
