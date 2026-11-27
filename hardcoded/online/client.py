@@ -323,7 +323,9 @@ def server_version(url):
 
 def engine_dir_of(version):
     """The local copy of engine `version`: the folders the server repo keeps it in."""
-    server = BOT_ROOT.parent / "multiplayer-server"
+    # the server repo next to this one (or next to Hochciv-KI, which holds this folder as hardcoded/)
+    server = next((p / "multiplayer-server" for p in BOT_ROOT.parents if (p / "multiplayer-server").is_dir()),
+                  BOT_ROOT.parent / "multiplayer-server")
     for d in (server / f"HochCiv-{version}" / "js", server / "HochCiv" / "js", BOT_ROOT / "runs" / "engines" / version):
         data = d / "data.js"
         if data.exists() and f"APP_VERSION = '{version}'" in data.read_text(encoding="utf-8"):

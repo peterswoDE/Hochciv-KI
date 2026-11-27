@@ -1,6 +1,6 @@
 """One control page for several bots: http://127.0.0.1:8700
 
-Each bot (Hochciv-KI or HochCiv-HardcodedBots online client) keeps its own control panel on
+Each bot (online client of hochciv_ki/ or hardcoded/) keeps its own control panel on
 127.0.0.1:PORT. In docker-compose all bots and the hub share one network namespace, so the hub
 reaches every panel on 127.0.0.1 like a browser on the same machine would.
 

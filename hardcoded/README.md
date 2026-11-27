@@ -5,6 +5,9 @@ eingebaute **KI auf Stufe „schwer"** (`ki.js`). Ziel: sie verlässlich schlage
 der Plättchenkarte, zu dritt und zu viert, auf der Originalkarte und auf eigenen Karten.
 Wunder, Ereignisse und Marathon spielen keine Rolle.
 
+Dieser Ordner war früher das eigene Repo `HochCiv-HardcodedBots` (Historie übernommen). Befehle
+unten laufen aus `hardcoded/`; online läuft der Bot (Statibot) über `../deploy/` in Docker.
+
 ## Grundsätze
 
 - **Alle Entscheidungen fallen in Python.** Die Regelmaschine ist nur Orakel: Sie beantwortet
@@ -13,8 +16,9 @@ Wunder, Ereignisse und Marathon spielen keine Rolle.
   `trials`).
 - **Nie** `ki*`-, `bot*`- oder `rush*`-Funktionen der Regelmaschine aufrufen – das wäre die KI
   selbst. `ki.js` darf man lesen, um den Gegner zu verstehen.
-- Die Regelmaschine liegt schreibgeschützt in `../multiplayer-server/HochCiv/js` (v112) und
-  wird hier **nicht** verändert. Anderer Ort: Umgebungsvariable `HOCHCIV_ENGINE_DIR`.
+- Die Regelmaschine liegt schreibgeschützt in `multiplayer-server/HochCiv/js` (v112, Ordner neben
+  `Hochciv-KI`; gesucht wird im nächsten Ordner darüber, der ihn hat) und wird hier **nicht**
+  verändert. Anderer Ort: Umgebungsvariable `HOCHCIV_ENGINE_DIR`.
 
 ## Aufbau
 
@@ -196,7 +200,7 @@ Live-Lobbys, Rundenspiele und Matchmaking. Gesteuert wird er über ein Control-B
 
 1. Bot-Konto anlegen: auf der Website Kontoseite → Reiter **Meine Bots** → Name → **Bot erstellen**
    (braucht die Rolle *Bot-Ersteller*). Das Token `hcbot_…` wird nur einmal gezeigt.
-2. `online.env` im Repo-Ordner anlegen (wird von `.gitignore` ignoriert, nie committen):
+2. `online.env` in `hardcoded/` anlegen (für Docker stattdessen `deploy/bots/<id>/bot.env`) (wird von `.gitignore` ignoriert, nie committen):
    ```
    HOCHCIV_URL=https://staging.hochciv.de
    HOCHCIV_TOKEN=hcbot_...
@@ -233,4 +237,4 @@ fallen als lokal. Probieren (`fork`, `trials`) bleibt lokal und kostet keine Ser
 simulierten Server (zweiter Engine-Worker mit eigenen Würfeln).
 
 Spielt der Server eine neue Engine-Version, nimmt der Client die passende lokale Kopie aus
-`../multiplayer-server/HochCiv-<version>/js` (laufende Rundenspiele behalten ihre Version).
+`multiplayer-server/HochCiv-<version>/js` (laufende Rundenspiele behalten ihre Version).

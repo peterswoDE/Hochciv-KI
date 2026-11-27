@@ -21,8 +21,15 @@ const path = require('path');
 const vm = require('vm');
 const readline = require('readline');
 
-const ENGINE_DIR = process.env.HOCHCIV_ENGINE_DIR ||
-  path.resolve(__dirname, '..', '..', '..', 'multiplayer-server', 'HochCiv', 'js');
+// default: the server repo in the nearest folder above that has one (next to Hochciv-KI)
+function defaultEngineDir() {
+  for (let d = __dirname; ; d = path.dirname(d)) {
+    const js = path.join(d, 'multiplayer-server', 'HochCiv', 'js');
+    if (fs.existsSync(js)) return js;
+    if (path.dirname(d) === d) return path.resolve(__dirname, '..', '..', '..', 'multiplayer-server', 'HochCiv', 'js');
+  }
+}
+const ENGINE_DIR = process.env.HOCHCIV_ENGINE_DIR || defaultEngineDir();
 // Same order as engine-adapter.js (index.html minus the DOM code)
 const FILES = ['data.js', 'civs.js', 'i18n.js', 'hex.js', 'tiles.js', 'engine.js', 'expansion.js',
   'bots.js', 'ki.js', 'marathon.js'];

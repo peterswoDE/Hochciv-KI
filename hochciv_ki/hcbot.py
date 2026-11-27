@@ -1,11 +1,11 @@
-"""Hard-coded Python bots (the HochCiv-HardcodedBots repo, read-only) as opponents.
+"""Hard-coded Python bots (hardcoded/, formerly the HochCiv-HardcodedBots repo) as opponents.
 
 A seat of kind 'ext' is a human seat to the engine that our worker does not play. When it is
 on turn, the state goes to a HardcodedBots worker (its `load`: a sandbox where nothing moves
 by itself), the bot plays its turn there and ends it, and the state comes back
 (external_done), where our worker plays the KI seats up to the next agent or external seat.
 
-The repo is found at ../HochCiv-HardcodedBots or HOCHCIV_HCBOTS_DIR. Its worker loads the
+The code is found at hardcoded/ of this repo or HOCHCIV_HCBOTS_DIR. Its worker loads the
 engine from HOCHCIV_ENGINE_DIR like ours, so both run the same version.
 """
 from __future__ import annotations
@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 
 HC_DIR = Path(os.environ.get("HOCHCIV_HCBOTS_DIR")
-              or Path(__file__).resolve().parents[2] / "HochCiv-HardcodedBots")
+              or Path(__file__).resolve().parents[1] / "hardcoded")
 _local = threading.local()
 _imported = False
 _lock = threading.Lock()
@@ -28,7 +28,7 @@ def _import():
     with _lock:
         if not _imported:
             if not (HC_DIR / "template" / "hcbots").is_dir():
-                raise FileNotFoundError(f"HochCiv-HardcodedBots not found at {HC_DIR}")
+                raise FileNotFoundError(f"hard-coded bots not found at {HC_DIR}")
             sys.path[:0] = [str(HC_DIR / "template"), str(HC_DIR)]
             _imported = True
     from hcbots.bridge import Bridge

@@ -207,8 +207,8 @@ share. ppo16 (`runs/queue11.sh`) trains v5 on v107 with a quarter of the games a
 ppo23 beat v5 offline (gate z 1.40) but lost online: about two thirds against v5 and most games
 against ChuckBot, an early slavery rusher. Online games are mostly duels in "random" lobbies (tile
 map, random nation and ability, no wonders or events). The rusher of HochCiv-HardcodedBots
-(`../HochCiv-HardcodedBots`, read-only; pinned copies in `runs/hcbots/<commit>` via
-`HOCHCIV_HCBOTS_DIR`) is much closer to it than `bridge/rush.js`. `hochciv_ki/hcbot.py` plays it
+(now `hardcoded/` in this repo, formerly `../HochCiv-HardcodedBots`; pinned copies in
+`runs/hcbots/<commit>` via `HOCHCIV_HCBOTS_DIR`) is much closer to it than `bridge/rush.js`. `hochciv_ki/hcbot.py` plays it
 as an external seat (seat kind `ext`, opponent `hc:rusher`, seat `H` in `train_ppo`): the worker
 hands the state over (`external_state`), the bot plays its turn in its own worker, the state comes
 back (`external_done`). Suite `online` in `eval_modes`, mix `online` in `train_ppo`.

@@ -1,13 +1,13 @@
 # Bots in Docker, eine Kontrollseite
 
-Alle Online-Bots (Hochciv-KI und HochCiv-HardcodedBots) laufen als Container. Eine gemeinsame
+Alle Online-Bots (KI-Bots aus `hochciv_ki/`, fest programmierte aus `hardcoded/`) laufen als Container. Eine gemeinsame
 Seite zeigt sie alle und schaltet zwischen ihren Panels um: **http://127.0.0.1:8700**
 
 | Bot      | Code          | Panel-Port (intern) | Ordner           |
 |----------|---------------|---------------------|------------------|
 | NeuraBot | Hochciv-KI    | 8765                | `bots/neurabot/` |
 | NeuraNew | Hochciv-KI    | 8766                | `bots/neuranew/` |
-| StatiBot | HardcodedBots | 8780                | `bots/statibot/` |
+| StatiBot | `hardcoded/`  | 8780                | `bots/statibot/` |
 
 Ein Ordner pro Bot mit allem, was zu ihm gehört; der Ordnername ist die Bot-ID (= Service-Name in
 `docker-compose.yml`):
@@ -25,7 +25,7 @@ keine `bot.env`.
 ## Start
 
 Voraussetzung: Docker Desktop (für die GPU: WSL2-Backend mit NVIDIA-Treiber), die Repos
-nebeneinander (`Hochciv-KI`, `HochCiv-HardcodedBots`, `multiplayer-server`).
+nebeneinander (`Hochciv-KI`, `multiplayer-server`).
 
 ```
 cd Hochciv-KI/deploy

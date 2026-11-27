@@ -1,4 +1,4 @@
-# HochCiv-HardcodedBots online client (the repo comes in as build context "hc", see docker-compose.yml).
+# Online client of the hardcoded bots (../hardcoded comes in as build context "hc", see docker-compose.yml).
 FROM node:24-bookworm-slim AS node
 
 FROM python:3.13-slim-bookworm

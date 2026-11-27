@@ -46,7 +46,7 @@ x-hc: &hc
   build:
     context: .
     dockerfile: hcbots.Dockerfile
-    additional_contexts: { hc: "${HCBOTS_DIR:-../../HochCiv-HardcodedBots}" }
+    additional_contexts: { hc: "${KI_DIR:-..}/hardcoded" }
   image: hochciv-bots/hcbots
 
 # read-only for every bot: the server repo's engine copies (each engine version a game runs on)
