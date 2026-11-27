@@ -1,0 +1,4 @@
+# The offline runner and evaluate.py need only the standard library and Node.js.
+# For the online client (online/client.py):
+python-socketio[client]>=5.11
+requests

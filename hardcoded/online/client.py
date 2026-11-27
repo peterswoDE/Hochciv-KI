@@ -1,0 +1,1488 @@
+"""Online-Client: spielt Live-Spiele und Rundenspiele auf einem HochCiv-Server mit einem
+fest programmierten Bot (Standard: rusher), gesteuert über ein lokales Control-Board (panel.py).
+
+    pip install -r requirements.txt
+    python -m online.client --config online.env [--bot rusher] [--opt key=value ...] [--open]
+    -> Control-Board auf http://127.0.0.1:8780
+
+online.env (git-ignoriert, KEY=VALUE):
+    HOCHCIV_URL=https://staging.hochciv.de
+    HOCHCIV_TOKEN=hcbot_...        # Bot-Konto (Kontoseite, Reiter "Meine Bots")
+
+Ein Bot-Konto spielt als Spieler-Bot (multiplayer-server docs/bots/writing-a-bot.md): es tritt
+nur Lobbys und Rundenspielen bei, deren Host Spieler-Bots erlaubt.
+
+Jede Aktion des Bots geht sofort an den Server (OnlineTurn.act): erst prüft die lokale Engine
+sie (eine Ablehnung kostet keinen Server-Aufruf), dann sendet der Client `action`, wartet auf
+den neuen Zustand und lädt ihn in die lokale Engine. Der Bot entscheidet so immer auf dem
+echten Stand – der Server schickt seinen Würfelzustand (S.seed) nicht mit, lokale Kampf- und
+Technologiewürfe würden sonst vom Server abweichen. Probieren (fork/trials) bleibt lokal.
+
+Aufbau (Login, Lobbys, Rundenspiele, Matchmaking, Panel) nach dem Online-Client von Hochciv-KI.
+"""
+from __future__ import annotations
+
+import argparse
+import collections
+import contextlib
+import json
+import logging
+import os
+import queue
+import re
+import secrets
+import threading
+import time
+from pathlib import Path
+
+import requests
+import socketio
+
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(ROOT / "template"), str(ROOT)]
+
+from hcbots.bridge import Bridge               # noqa: E402
+from hcbots.turn import Turn                   # noqa: E402
+
+log = logging.getLogger("hcbots")
+
+GREETING = "Hallo! Ich bin ein fest programmierter HochCiv-Bot. Viel Spaß!"
+MAX_PLAYERS = 8
+# map keys of live lobbies and Rundenspiele -> the map groups in the settings
+MAP_GROUPS = {"0": "original", "1": "original", "original": "original", "gross": "gross",
+              "random": "tiles", "plaettchen": "tiles", "eigene": "custom"}
+HOST_MAPS = {"live": ("random", "0", "gross"), "async": ("plaettchen", "0", "gross")}
+EVENT_MODES = ("off", "easy", "hard")
+TURN_TIMES = (0, 60, 120, 180, 300, 600)
+KI_LEVELS = ("leicht", "mittel", "schwer")
+MAX_SETUPS = 12
+
+SETUP = {"kind": "live", "count": 1, "mapKey": "random", "playerCount": 2, "kiCount": 1, "difficulty": "schwer",
+         "turnTime": 180, "randomCivs": False, "civMode": "random", "isPublic": True, "playerBotLimit": None,
+         "ranked": False, "wonders": False, "events": "off", "expCivs": False}
+DEFAULTS = {
+    "version": 1,
+    "join": {
+        "on": False,
+        "live": True, "max_live": 1,         # live games joined at once
+        "async": True, "max_async": 5,       # Rundenspiele joined at once
+        "maps": ["tiles", "original", "gross", "custom"],
+        "min_empires": 2, "max_empires": 4,
+        "ki": True,                          # games with KI seats
+        "ranked": "any",                     # any | ranked | unranked
+        "timer": False,                      # live: only lobbies with a turn timer
+        "bot_hosts": True,                   # games hosted by other bots
+        "wonders": False,                    # games with wonders (the bot never builds them)
+        "exp_civs": True,                    # games with the experimental nations (v111+)
+        "events": ["off"],                   # event modes joined: off, easy, hard
+    },
+    "host": {
+        "on": False,
+        "setups": [dict(SETUP, id="live1", count=0), dict(SETUP, id="async1", kind="async", mapKey="plaettchen", count=0)],
+        "start_after": 5,                    # live: start after so many minutes ...
+        "min_players": 2,                    # ... with at least so many players
+    },
+    "match": False,                          # ranked matchmaking (bot accounts)
+    "greeting": GREETING,
+}
+
+
+def read_env(path):
+    out = {}
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip().strip('"').strip("'")
+    return out
+
+
+def fingerprint(state) -> int:
+    """Changes with every applied action (resources, positions, logs, ...)."""
+    return hash(json.dumps(state, sort_keys=True))
+
+
+def is_marathon(cfg: dict) -> bool:
+    return bool(cfg.get("marathon") or cfg.get("mapKey") == "marathon" or (cfg.get("customMap") or {}).get("marathon"))
+
+
+def event_mode(cfg: dict) -> str:
+    return (cfg.get("eventMode") or "hard") if cfg.get("events") else "off"
+
+
+def winners_of(over: dict | None, S: dict | None, me) -> dict | None:
+    """Who won a finished game: the engine's S.over names the winning seats (indexes into
+    S.players, as yourIndex). Humans and player-bots keep their name in the state, KI seats
+    show their nation. None if the game didn't end with a result (left, kicked)."""
+    over = over or {}
+    ws = over.get("winners") or ([over["winner"]] if over.get("winner") is not None else [])
+    if not ws:
+        return None
+    pl = (S or {}).get("players") or []
+
+    def name(i):
+        if not 0 <= i < len(pl):
+            return f"seat {i + 1}"
+        p = pl[i]
+        return p.get("name") or ("KI " + str(p.get("civ") or "").capitalize()).strip()
+    return {"winners": [name(i) for i in ws], "won": me in ws, "shared": len(ws) > 1}
+
+
+def mode_label(cfg: dict) -> str:
+    """Short text of the game options for the panel."""
+    bits = []
+    if is_marathon(cfg) and cfg.get("mapKey") != "marathon":
+        bits.append("marathon rules")
+    if cfg.get("wonders"):
+        bits.append("wonders")
+    if cfg.get("expCivs"):
+        bits.append("exp. nations")       # v111+: the bot plays them (Rome, Venice ...)
+    if event_mode(cfg) != "off":
+        bits.append("events " + event_mode(cfg))
+    return ", ".join(bits)
+
+
+def config_ok(cfg: dict, n_players=None, max_empires=MAX_PLAYERS) -> str | None:
+    """Why a game configuration is outside what the bot plays (None = fine): no Marathon (no
+    ability draft), up to 8 empires; wonders and events are legal but not played for."""
+    if is_marathon(cfg):
+        return "marathon"
+    if str(cfg.get("mapKey")) not in MAP_GROUPS and cfg.get("mapKey") is not None:
+        return f"map {cfg.get('mapKey')}"
+    n = n_players or cfg.get("playerCount") or cfg.get("humanCount")
+    if n and n > max_empires:
+        return f"{n} empires"
+    return None
+
+
+def join_filter(j: dict, cfg: dict, empires=None, ki=None, host_is_bot=False, live=True) -> str | None:
+    """Why a game doesn't match the join filters of the settings (None = it does). Only for
+    joining on its own: a game picked in the panel just has to be playable (config_ok)."""
+    if MAP_GROUPS.get(str(cfg.get("mapKey"))) not in j["maps"]:
+        return f"map {cfg.get('mapKey')}"
+    if cfg.get("wonders") and not j["wonders"]:
+        return "wonders"
+    if cfg.get("expCivs") and not j.get("exp_civs", True):
+        return "experimental nations"
+    if event_mode(cfg) not in j["events"]:
+        return "no events" if event_mode(cfg) == "off" else f"events {event_mode(cfg)}"
+    n = empires or cfg.get("playerCount")
+    if n and not j["min_empires"] <= n <= j["max_empires"]:
+        return f"{n} empires"
+    if ki is None:
+        ki = cfg.get("kiCount") or 0
+    if ki and not j["ki"]:
+        return "KI seats"
+    if j["ranked"] != "any" and bool(cfg.get("ranked")) != (j["ranked"] == "ranked"):
+        return "ranked" if cfg.get("ranked") else "unranked"
+    if live and j["timer"] and not cfg.get("turnTime"):
+        return "no turn timer"
+    if host_is_bot and not j["bot_hosts"]:
+        return "hosted by a bot"
+    return None
+
+
+def _num(v, lo, hi, default):
+    try:
+        return max(lo, min(hi, int(v)))
+    except (TypeError, ValueError):
+        return default
+
+
+def host_empires(map_key):
+    """Empires a hosted game may have on this map (as mapLimits in the engine)."""
+    if map_key in ("0", "gross"):
+        return 2, 4
+    return 2, MAX_PLAYERS
+
+
+def host_options(setup: dict) -> dict:
+    """The game options of a host setup in the server's config fields."""
+    ev = setup.get("events", "off")
+    return {"wonders": bool(setup.get("wonders")), "events": ev != "off", "eventMode": ev if ev != "off" else "hard",
+            "expCivs": exp_civs_on(setup)}
+
+
+def exp_civs_on(cfg: dict) -> bool:
+    """Whether a config plays with the experimental nations (v111+), as the server decides
+    (utils/civdraft.js expCivsOn): switched on, tile or custom map, no marathon, not ranked."""
+    free = str(cfg.get("mapKey")) in ("plaettchen", "random", "eigene")
+    return bool(cfg.get("expCivs")) and free and not is_marathon(cfg) and not cfg.get("ranked")
+
+
+def clean_setup(raw: dict, old: dict | None = None) -> dict:
+    s = dict(SETUP, **(old or {}))
+    s["id"] = str(raw.get("id") or s.get("id") or secrets.token_hex(3))[:12]
+    if raw.get("kind") in HOST_MAPS:
+        s["kind"] = raw["kind"]
+    if raw.get("mapKey") in HOST_MAPS[s["kind"]]:
+        s["mapKey"] = raw["mapKey"]
+    if s["mapKey"] not in HOST_MAPS[s["kind"]]:
+        s["mapKey"] = HOST_MAPS[s["kind"]][0]
+    s["count"] = _num(raw.get("count", s["count"]), 0, 30 if s["kind"] == "async" else 8, s["count"])
+    lo, hi = host_empires(s["mapKey"])
+    s["playerCount"] = _num(raw.get("playerCount", s["playerCount"]), lo, hi, s["playerCount"])
+    s["playerCount"] = max(lo, min(hi, s["playerCount"]))
+    s["kiCount"] = min(_num(raw.get("kiCount", s["kiCount"]), 0, MAX_PLAYERS, 0), s["playerCount"] - 2)  # two humans
+    if "wonders" in raw:
+        s["wonders"] = bool(raw["wonders"])
+    if "expCivs" in raw:
+        s["expCivs"] = bool(raw["expCivs"])
+    if raw.get("events") in EVENT_MODES:
+        s["events"] = raw["events"]
+    if raw.get("difficulty") in KI_LEVELS:
+        s["difficulty"] = raw["difficulty"]
+    if _num(raw.get("turnTime"), 0, 600, -1) in TURN_TIMES:
+        s["turnTime"] = int(raw["turnTime"])
+    if raw.get("civMode") in ("random", "fixed"):
+        s["civMode"] = raw["civMode"]
+    for k in ("randomCivs", "isPublic", "ranked"):
+        if k in raw:
+            s[k] = bool(raw[k])
+    if s["ranked"]:
+        s["difficulty"] = KI_LEVELS[-1]      # ranked: the KI plays on the hardest level (as the server does)
+    if "playerBotLimit" in raw:
+        v = raw["playerBotLimit"]
+        s["playerBotLimit"] = None if v in (None, "", 0, "0") else _num(v, 1, 8, None)
+    return s
+
+
+def clean_settings(raw: dict, old: dict | None = None) -> dict:
+    """Merge `raw` over `old` (or the defaults) and keep every value in range. `raw` may be
+    partial; a given `host.setups` replaces the whole list."""
+    s = json.loads(json.dumps(DEFAULTS))
+    if old and old.get("version") == DEFAULTS["version"]:
+        # settings saved before a key existed keep the key's default
+        old = json.loads(json.dumps(old))
+        s["join"].update(old.get("join") or {})
+        s["host"].update(old.get("host") or {})
+        s["host"]["setups"] = [clean_setup({}, x) for x in s["host"]["setups"]]
+        s.update({k: v for k, v in old.items() if k not in ("join", "host")})
+    raw = raw or {}
+    j, rj = s["join"], raw.get("join") or {}
+    for k in ("on", "live", "async", "ki", "timer", "bot_hosts", "wonders", "exp_civs"):
+        if k in rj:
+            j[k] = bool(rj[k])
+    if isinstance(rj.get("events"), list):
+        j["events"] = [m for m in EVENT_MODES if m in rj["events"]]
+    j["max_live"] = _num(rj.get("max_live", j["max_live"]), 0, 8, j["max_live"])
+    j["max_async"] = _num(rj.get("max_async", j["max_async"]), 0, 30, j["max_async"])
+    j["min_empires"] = _num(rj.get("min_empires", j["min_empires"]), 2, MAX_PLAYERS, j["min_empires"])
+    j["max_empires"] = _num(rj.get("max_empires", j["max_empires"]), j["min_empires"], MAX_PLAYERS, j["max_empires"])
+    if isinstance(rj.get("maps"), list):
+        j["maps"] = [m for m in DEFAULTS["join"]["maps"] if m in rj["maps"]]
+    if rj.get("ranked") in ("any", "ranked", "unranked"):
+        j["ranked"] = rj["ranked"]
+    h, rh = s["host"], raw.get("host") or {}
+    if "on" in rh:
+        h["on"] = bool(rh["on"])
+    h["start_after"] = _num(rh.get("start_after", h["start_after"]), 0, 120, h["start_after"])
+    h["min_players"] = _num(rh.get("min_players", h["min_players"]), 2, MAX_PLAYERS, h["min_players"])
+    if isinstance(rh.get("setups"), list):
+        olds = {x["id"]: x for x in h["setups"]}
+        h["setups"] = [clean_setup(x, olds.get(x.get("id"))) for x in rh["setups"][:MAX_SETUPS] if isinstance(x, dict)]
+    if "match" in raw:
+        s["match"] = bool(raw["match"])
+    if isinstance(raw.get("greeting"), str):
+        s["greeting"] = raw["greeting"].strip()[:300]
+    return s
+
+
+def setup_key(cfg: dict):
+    """What tells hosted Rundenspiele of one setup apart from those of another."""
+    n = cfg.get("playerCount")
+    humans = cfg.get("humanCount") if cfg.get("humanCount") is not None else n - (cfg.get("kiCount") or 0)
+    # a setup stores events as "off" / "easy" / "hard", the server's config as events + eventMode
+    ev = cfg.get("events") if isinstance(cfg.get("events"), str) else event_mode(cfg)
+    return str(cfg.get("mapKey")), n, humans, bool(cfg.get("ranked")), bool(cfg.get("wonders")), ev, exp_civs_on(cfg)
+
+
+class Tagged(logging.LoggerAdapter):
+    def process(self, msg, kwargs):
+        return f"[{self.extra['tag']}] {msg}", kwargs
+
+
+BOT_ROOT = ROOT
+MAX_BRIDGES = 4           # node workers per engine version (games playing at the same time)
+
+
+def server_version(url):
+    """The engine version the server at `url` runs (APP_VERSION in its js/data.js), None if it
+    can't be read."""
+    try:
+        r = requests.get(url.rstrip("/") + "/js/data.js", timeout=20)
+        r.raise_for_status()
+    except requests.RequestException as e:
+        log.warning("engine version of %s unknown: %s", url, e)
+        return None
+    m = re.search(r"APP_VERSION\s*=\s*'([^']+)'", r.text)
+    return m.group(1) if m else None
+
+
+def engine_dir_of(version):
+    """The local copy of engine `version`: the folders the server repo keeps it in."""
+    server = BOT_ROOT.parent / "multiplayer-server"
+    for d in (server / f"HochCiv-{version}" / "js", server / "HochCiv" / "js", BOT_ROOT / "runs" / "engines" / version):
+        data = d / "data.js"
+        if data.exists() and f"APP_VERSION = '{version}'" in data.read_text(encoding="utf-8"):
+            return d
+    raise RuntimeError(f"no local copy of engine {version}")
+
+
+def load_bot(name: str, opts: dict | None = None):
+    """A bot of bots/<name>/bot.py with constructor options (as in evaluate.py)."""
+    import importlib
+    mod = importlib.import_module(f"bots.{name}.bot")
+    cls = next(v for v in vars(mod).values() if isinstance(v, type) and getattr(v, "name", None) == name)
+    return cls(**(opts or {}))
+
+
+def parse_opts(items) -> dict:
+    import ast
+    out = {}
+    for it in items or []:
+        k, v = it.split("=", 1)
+        try:
+            out[k] = ast.literal_eval(v)
+        except (ValueError, SyntaxError):
+            out[k] = v
+    return out
+
+
+def local_state(state):
+    """A server state for the local engine. The server leaves out its dice (S.seed), so the
+    local copy rolls its own – only for tries; the real rolls are the server's."""
+    S = dict(state)
+    if not isinstance(S.get("seed"), int):
+        S["seed"] = secrets.randbelow(2 ** 31)
+    S.setdefault("log", [])
+    return S
+
+
+class TurnOver(Exception):
+    """The turn ended under the bot's hands (turn timer, game over): stop deciding."""
+
+
+class OnlineTurn(Turn):
+    """A Turn whose actions go to the server. `send(type, params)` raises RuntimeError on a
+    refusal; `latest()` is the newest server state. After every action the local game is the
+    server's state again."""
+
+    def __init__(self, bridge, gid, state, me, send, latest):
+        self.send_fn, self.latest, self.me_index = send, latest, me
+        self.sent = 0
+        super().__init__(bridge, gid, state=state)
+
+    def sync(self):
+        S = self.latest() or self.S
+        self.b.call("load", gid=self.gid, state=local_state(S), pi=self.me_index)
+        self.S = S
+
+    def act(self, type_: str, **params) -> str | None:
+        if self.S.get("over") or self.S.get("cur") != self.me_index:
+            raise TurnOver()
+        # the local engine first: a move it refuses never reaches the server
+        res = self.b.call("try", gid=self.gid, trials=[{"acts": [{"type": type_, "params": params}], "calls": []}])
+        err = res["results"][0].get("err")
+        if not err:
+            try:
+                self.send_fn(type_, params)
+                self.sent += 1
+            except RuntimeError as e:
+                err = str(e)
+            self.sync()
+        if err:
+            self.errors.append((type_, params, err))
+        else:
+            self.actions.append((type_, params))
+        return err
+
+
+class Brain:
+    """The bot plus local engine workers (the rules oracle). `on(engine)` gives the Brain of an
+    engine version, `play(...)` plays one turn. Games play at the same time, each on a worker
+    of its own (up to MAX_BRIDGES, then they wait)."""
+
+    def __init__(self, bot_name, opts=None, engine_dir=None, version=None):
+        self.bot_name, self.opts = bot_name, dict(opts or {})
+        self.engine_dir = engine_dir
+        self.free: list[Bridge] = [Bridge(engine_dir)]
+        self.version = version or self.free[0].info()["version"]
+        self.spec = bot_name + "".join(f" {k}={v}" for k, v in self.opts.items())
+        self.slots = threading.Semaphore(MAX_BRIDGES)
+        self.lock = threading.Lock()
+        self.others = {}                 # engine version -> Brain on that engine
+        self.current = self.version      # the version the server runs now (Manager.check_engine)
+        self.bots = {}                   # game key -> bot instance
+
+    def on(self, engine):
+        if engine in (None, "current"):
+            engine = self.current
+        if engine == self.version:
+            return self
+        with self.lock:
+            if engine not in self.others:
+                self.others[engine] = Brain(self.bot_name, self.opts, engine_dir_of(engine), engine)
+                log.info("loaded engine %s for its running games", engine)
+            return self.others[engine]
+
+    def close(self):
+        for b in self.others.values():
+            b.close()
+        for br in self.free:
+            br.close()
+
+    @contextlib.contextmanager
+    def bridge(self):
+        """A free worker for one turn."""
+        with self.slots:
+            with self.lock:
+                br = self.free.pop() if self.free else Bridge(self.engine_dir)
+            try:
+                yield br
+            finally:
+                with self.lock:
+                    self.free.append(br)
+
+    def bot_for(self, key):
+        with self.lock:
+            if key not in self.bots:
+                self.bots[key] = load_bot(self.bot_name, self.opts)
+            return self.bots[key]
+
+    def forget(self, key):
+        with self.lock:
+            self.bots.pop(key, None)
+
+    def play(self, state, me, key, send, latest, logger=log):
+        """Play the turn of seat `me` in game `key`: the bot's moves, armies out of the cities,
+        endTurn. True if the turn was ended (or is no longer ours)."""
+        from hcbots.runner import free_blocked_armies
+        bot = self.bot_for(key)
+        with self.bridge() as br:
+            gid = br.call("load", state=local_state(state), pi=me)["gid"]
+            t = OnlineTurn(br, gid, state, me, send, latest)
+            t0 = time.time()
+            try:
+                try:
+                    bot.turn(t)
+                except TurnOver:
+                    raise
+                except Exception:  # noqa: BLE001 - a bug in the bot: end the turn anyway
+                    logger.exception("%s: bot failed in round %s", key, state.get("round"))
+                if t.S.get("over") or t.S.get("cur") != me:
+                    return True
+                err = t.act("endTurn")
+                if err:
+                    free_blocked_armies(t)
+                    err = t.act("endTurn")
+                if err and t.S.get("cur") == me and not t.S.get("over"):
+                    logger.warning("%s: turn not ended: %s", key, err)
+                    return False
+                return True
+            except TurnOver:
+                return True
+            finally:
+                refused = [f"{a}: {e}" for a, _, e in t.errors][:4]
+                logger.info("%s: round %s, %d actions in %.1fs%s", key, state.get("round"), t.sent,
+                            time.time() - t0, f" (refused locally: {'; '.join(refused)})" if refused else "")
+                br.close_game(gid)
+
+    def place(self, plan, seat_idx, player):
+        """Start tile on a tile map: the bot's choice among the engine's placement options."""
+        with self.bridge() as br:
+            choices = br.call("place_choices", plan=plan, seatIdx=seat_idx, player=player)["choices"]
+        seat = next(s for s in plan["seats"] if s["idx"] == seat_idx)
+        bot = load_bot(self.bot_name, self.opts)
+        pick = bot.place({"idx": seat_idx, "slot": seat.get("slot"), "choices": choices}, plan) \
+            if hasattr(bot, "place") else None
+        if not pick:
+            pick = next(({"o": o, "cell": n} for o, row in enumerate(choices) for n, y in enumerate(row) if y), None)
+        if not pick:
+            raise RuntimeError("no start cell")
+        return pick["o"], pick["cell"]
+
+
+class Account:
+    """The login (bot token, password, or none = guest) and its REST session."""
+
+    def __init__(self, url, user=None, password=None, token=None, name=None):
+        self.url = url.rstrip("/")
+        self.user, self.password, self.token = user, password, token
+        self.name = name
+        self.is_bot = False          # logged in as a bot account (set by login)
+        self.http = requests.Session()
+        self.lock = threading.Lock()  # the cookie jar is shared by all threads
+
+    def get(self, path, **kw):
+        with self.lock:
+            return self.http.get(self.url + path, timeout=20, **kw)
+
+    def post(self, path, **kw):
+        with self.lock:
+            return self.http.post(self.url + path, timeout=20, **kw)
+
+    def cookie(self):
+        with self.lock:
+            return "; ".join(f"{c.name}={c.value}" for c in self.http.cookies)
+
+    def login(self):
+        if self.token:
+            # no Origin header: the server's origin check lets non-browser bot logins through
+            r = self.post("/api/auth/bot", headers={"Authorization": f"Bearer {self.token}"})
+            if r.status_code in (401, 403):
+                raise RuntimeError(f"bot login refused: {r.json().get('error', r.status_code)}")
+        elif self.user:
+            r = self.post("/api/auth/login", json={"username": self.user, "password": self.password})
+        else:
+            self.name = self.name or "Gast"
+            log.info("playing as guest %s", self.name)
+            return
+        r.raise_for_status()
+        body = r.json()
+        if not body.get("ok", True) or body.get("mfa") or body.get("needs"):
+            raise RuntimeError(f"login needs more than a password: {body}")
+        me = self.get("/api/auth/me").json()
+        me = me.get("user") or me
+        self.user = me.get("username", self.user)
+        self.is_bot = me.get("accountType") == "bot"
+        if self.is_bot:
+            self.name = self.user        # a player-bot plays under its account name
+        self.name = self.name or self.user
+        log.info("logged in as %s (%s)", self.user, "bot account" if self.is_bot else "regular account")
+
+    def check_login(self) -> bool:
+        """Sessions expire, and a renewed token or a banned owner ends them: log in again (the
+        bot login fails loudly when the token no longer works). True if it logged in again."""
+        if not (self.token or self.user) or self.get("/api/auth/me").status_code != 401:
+            return False
+        log.warning("session ended, logging in again")
+        self.login()
+        return True
+
+
+class Conn:
+    """One socket.io connection with an ordered event queue, handled in its own thread."""
+
+    EVENTS = ("game:start", "state:update", "placement:start", "draft:update", "game:over", "session:kicked",
+              "async:update", "match:found", "match:ready", "match:cancelled", "turn:timeout",
+              "lobby:player:updated", "lobby:config:update", "session:rematch", "player:joined", "player:left")
+
+    def __init__(self, mgr, tag):
+        self.mgr, self.acc, self.brain = mgr, mgr.acc, mgr.brain
+        self.log = Tagged(log, {"tag": tag})
+        self.events: queue.Queue = queue.Queue()
+        self.stash = []              # events put aside while waiting for an update
+        self.sio = None
+        self.closing = False         # closed on purpose: a disconnect is no reason to reconnect
+
+    def connect(self, tries=4):
+        """Open the socket. The first request may take a while on a slow network (engine.io's
+        default timeout is 5 s): longer timeout, a few tries with a pause in between."""
+        for attempt in range(1, tries + 1):
+            try:
+                return self._connect()
+            except socketio.exceptions.ConnectionError as e:
+                if attempt == tries:
+                    raise
+                self.log.warning("connect failed (%s), try %d of %d in %d s", e, attempt + 1, tries, 5 * attempt)
+                time.sleep(5 * attempt)
+
+    def _connect(self):
+        # No socket.io reconnect: it comes back without the login (the server then refuses a
+        # bot's seat and its Rundenspiele). next_event reconnects with a fresh client instead.
+        self.sio = sio = socketio.Client(reconnection=False, logger=False, engineio_logger=False, request_timeout=20)
+        self.closing = False
+        # engine.io handles every message in its own thread, so an ack could overtake the
+        # broadcast of the previous action and the next decision would see a stale state.
+        # Our handlers only queue events, so handling them in order in the read thread is safe.
+        trigger = self.sio.eio._trigger_event
+
+        def in_order(event, *args, **kw):
+            if event == "message":
+                kw["run_async"] = False
+            return trigger(event, *args, **kw)
+        self.sio.eio._trigger_event = in_order
+        for ev in self.EVENTS:
+            self.sio.on(ev, (lambda e: lambda data=None: self.events.put((e, data)))(ev))
+        self.sio.on("disconnect", lambda *a: self.events.put(("disconnect", sio)))
+        self.sio.on("connect", lambda: self.events.put(("connect", None)))
+        self.sio.connect(self.acc.url, headers={"Cookie": self.acc.cookie(), "Origin": self.acc.url},
+                         transports=["polling", "websocket"], wait_timeout=20)
+
+    def close(self):
+        self.closing = True
+        try:
+            if self.sio:
+                self.sio.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def reconnect(self):
+        self.close()
+        self.connect()
+
+    def call(self, event, data, timeout=30):
+        if not self.sio.connected and not self.closing:
+            # the socket is gone without a disconnect event we act on (e.g. a reconnect that
+            # failed half way): ask next_event to reconnect instead of failing every call
+            self.events.put(("disconnect", self.sio))
+        res = self.sio.call(event, data, timeout=timeout)
+        if isinstance(res, dict) and res.get("error"):
+            raise RuntimeError(f"{event}: {res['error']}")
+        return res
+
+    def command(self, name, data=None):
+        """Run `name` in this connection's thread (from the panel or the manager)."""
+        self.events.put(("cmd:" + name, data))
+
+    def next_event(self, timeout=2):
+        ev, data = self.stash.pop(0) if self.stash else self.events.get(timeout=timeout)
+        if ev == "disconnect" and data is self.sio and not self.closing:
+            # the connection dropped (e.g. the server was busy past the ping timeout): log in
+            # again if the session ended and open a fresh socket; its connect event follows
+            self.log.warning("connection lost, reconnecting")
+            try:
+                self.acc.check_login()
+                self.reconnect()
+            except Exception as e:  # noqa: BLE001 - try again later
+                self.log.warning("reconnect failed (%s), next try in 30 s", e)
+                time.sleep(30)
+                # _connect has already replaced self.sio: the retry must name the new socket,
+                # or the check above ignores it and the client stays offline for good
+                self.events.put((ev, self.sio))
+        return ev, data
+
+    def game_of(self, args):
+        """The game a guarded call works on, for the log."""
+        return None
+
+    def guarded(self, fn, *args):
+        try:
+            return fn(*args)
+        except Exception:  # noqa: BLE001 - one bad turn must not stop the client
+            game = self.game_of(args)
+            self.log.exception("%s failed%s", fn.__name__, f" ({game})" if game else "")
+
+    def take_update(self, ev, data):
+        """Apply a state update without starting a turn. True if it was one."""
+        return False
+
+    def drain(self):
+        """Take all queued state updates (the newest wins); other events wait in the stash."""
+        while True:
+            try:
+                ev, data = self.events.get_nowait()
+            except queue.Empty:
+                return
+            if not self.take_update(ev, data):
+                self.stash.append((ev, data))
+
+    @staticmethod
+    def newer(new, old):
+        """A state is never replaced by an older one (logSeq only grows)."""
+        if not old or not new:
+            return bool(new)
+        return (new.get("logSeq") or 0) >= (old.get("logSeq") or 0)
+
+    def play_turn(self, state, me, key, send, latest, brain=None):
+        """Play the turn of seat `me` in game `key`. `send(type, params)` raises on a refused
+        action; `latest()` returns the newest server state. False if the server refused to end
+        the turn: the caller tries again."""
+        return (brain or self.brain.on(None)).play(state, me, key, send, latest, self.log)
+
+
+class LiveGame(Conn):
+    """One live game: joined from the public list, hosted by the bot, or from matchmaking."""
+
+    DONE = ("over", "left", "failed")
+    RETRY = 15                   # seconds until a turn the server didn't let us end is tried again
+
+    def __init__(self, mgr, lobby=None, host_cfg=None, match=None, picked=False):
+        """host_cfg: a setup from the settings (its id ties the game to the setup)."""
+        self.id = secrets.token_hex(3)
+        super().__init__(mgr, f"live {self.id}")
+        self.kind = "host" if host_cfg else "match" if match else "join"
+        self.lobby, self.host_cfg, self.match, self.picked = lobby, host_cfg, match, picked
+        self.g = None                # {sessionId, password, clientId, yourIndex, players, cfg, state}
+        self.setup_id = (host_cfg or {}).get("id")
+        self.join_code = (lobby or {}).get("joinCode") or (match or {}).get("joinCode")
+        self.phase = "connecting"    # lobby, placement, playing, over, left, failed
+        self.note = ""
+        self.result = None           # after game:over: {winners, won, shared} (winners_of)
+        self.since = time.time()
+        self.last_start_try = self.last_ping = 0.0
+        self.connected = False       # the first connect event is the initial connection
+        self.rebinds = 0             # failed seat bindings after reconnects in a row
+        self.retry_at = 0.0          # when to try the turn again (0 = no need)
+        self.done = threading.Event()
+        self.thread = threading.Thread(target=self.run, daemon=True, name=f"live-{self.id}")
+
+    def start(self):
+        self.thread.start()
+        return self
+
+    def info(self):
+        g = self.g or {}
+        cfg, S = g.get("cfg") or {}, g.get("state") or {}
+        return {"id": self.id, "kind": self.kind, "picked": self.picked, "setup": self.setup_id,
+                "phase": self.phase, "note": self.note,
+                "joinCode": self.join_code, "sessionId": g.get("sessionId"), "password": g.get("password"),
+                "mapKey": cfg.get("mapKey"), "empires": cfg.get("playerCount"), "kiCount": cfg.get("kiCount"),
+                "ranked": bool(cfg.get("ranked")), "mode": mode_label(cfg),
+                "players": [p.get("name") for p in (g.get("players") or [])], "round": S.get("round"),
+                "myTurn": bool(S) and not S.get("over") and S.get("cur") == g.get("yourIndex"),
+                "result": self.result, "since": self.since}
+
+    def leave(self, why=""):
+        """Leave the game (in a running game the server lets the KI take over the seat)."""
+        self.command("leave", why)
+
+    # ---------------------------------------------------------------- thread
+    def run(self):
+        try:
+            self.connect()
+            if self.host_cfg:
+                self.open_lobby()
+            elif self.match:
+                self.enter(self.match["sessionId"], self.match["password"], self.match["clientId"])
+            else:
+                self.join()
+            while self.phase not in self.DONE:
+                try:
+                    ev, data = self.next_event(2)
+                    self.handle(ev, data)
+                except queue.Empty:
+                    pass
+                if self.kind == "host" and self.phase == "lobby":
+                    self.guarded(self.host_tick)
+                # the server's 15 s rebroadcast stops 30 s after the last accepted action
+                if self.retry_at and time.time() >= self.retry_at:
+                    self.guarded(self.live_turn)
+        except Exception as e:  # noqa: BLE001
+            self.log.exception("live game failed")
+            self.phase, self.note = "failed", str(e)
+        finally:
+            self.close()
+            self.done.set()
+            self.mgr.live_ended(self)
+
+    def join(self):
+        s, client_id = self.lobby, secrets.token_hex(16)
+        r = self.acc.post("/api/sessions/join", json={
+            "joinCode": s["joinCode"], "password": s["password"],
+            "player": {"name": self.acc.name, "clientId": client_id, "civ": "random", "ability": "random"}})
+        if r.status_code != 200:
+            raise RuntimeError(f"join refused: {r.json().get('error', r.status_code)}")
+        self.enter(r.json()["sessionId"], s["password"], client_id)
+
+    def open_lobby(self):
+        client_id = secrets.token_hex(16)
+        keys = ("mapKey", "playerCount", "kiCount", "difficulty", "turnTime", "randomCivs", "isPublic", "playerBotLimit", "ranked")
+        cfg = dict({k: self.host_cfg[k] for k in keys if k in self.host_cfg}, **host_options(self.host_cfg),
+                   noKi=False, playerBots=True, seed=secrets.randbelow(2 ** 31))
+        cfg["ranked"] = bool(cfg.get("ranked"))
+        r = self.acc.post("/api/sessions", json={
+            "config": cfg, "host": {"name": self.acc.name, "clientId": client_id, "civ": "random", "ability": "random"}})
+        if r.status_code not in (200, 201):
+            raise RuntimeError(f"lobby not created: {r.json().get('error', r.status_code)}")
+        b = r.json()
+        self.join_code = b.get("joinCode")
+        self.enter(b["sessionId"], b["password"], client_id)
+        self.log.info("hosting lobby %s (%s, %s empires, %s KI%s)", self.join_code, cfg.get("mapKey"),
+                      cfg.get("playerCount"), cfg.get("kiCount"), ", ranked" if cfg["ranked"] else "")
+
+    def enter(self, session_id, password, client_id):
+        ack = self.call("session:connect", {"sessionId": session_id, "password": password, "clientId": client_id})
+        self.g = {"sessionId": session_id, "password": password, "clientId": client_id,
+                  "players": ack.get("players"), "cfg": ack.get("gameConfig") or {}, "lobbyIndex": ack.get("playerIndex")}
+        self.phase = "lobby" if ack.get("status", "lobby") == "lobby" else "playing"
+        if self.kind == "join":
+            # the public list doesn't show the whole configuration: check it now
+            players, hi = ack.get("players") or [], ack.get("hostIndex", 0)
+            host_is_bot = 0 <= hi < len(players) and bool(players[hi].get("botAccount"))
+            cfg = self.g["cfg"]
+            why = config_ok(cfg) or (None if self.picked else join_filter(self.mgr.settings["join"], cfg, host_is_bot=host_is_bot))
+            if why:
+                self.mgr.refuse(session_id)
+                self.drop("left", f"lobby: {why}")
+                return
+        self.log.info("in lobby %s (seat %s)", session_id, ack.get("playerIndex"))
+        if self.mgr.settings["greeting"]:
+            try:
+                self.call("chat:send", {"kind": "text", "text": self.mgr.settings["greeting"]})
+            except Exception as e:  # noqa: BLE001
+                self.log.info("greeting not sent: %s", e)
+
+    def drop(self, phase, why):
+        if why:
+            self.log.info("leaving: %s", why)
+        self.phase, self.note = phase, why or self.note
+        # leaving = dropping the socket (the server removes a disconnected lobby player)
+        self.close()
+
+    def host_tick(self):
+        """A hosted lobby starts when it is full, or after `start_after` minutes with at least
+        `min_players` (the free seats become KI). Pings keep the lobby from timing out."""
+        st, now = self.mgr.settings["host"], time.time()
+        cfg = self.g["cfg"]
+        humans = len(self.g.get("players") or [])
+        need = (cfg.get("playerCount") or 2) - (cfg.get("kiCount") or 0)
+        waited = now - self.since >= st["start_after"] * 60
+        if (humans >= need or (waited and humans >= min(st["min_players"], need))) and humans >= 2 \
+                and now - self.last_start_try > 20:
+            self.last_start_try = now
+            try:
+                self.call("game:start", {})
+                self.log.info("started with %d players", humans)
+            except RuntimeError as e:
+                self.note = str(e)
+                self.log.warning("start: %s", e)
+        if now - self.last_ping > 240:
+            self.last_ping = now
+            self.call("lobby:player:update", {})
+
+    def handle(self, ev, data):
+        if ev == "cmd:leave":
+            self.drop("left", data or "left by the panel")
+        elif ev in ("game:start", "state:update") and self.g:
+            if ev == "game:start":
+                self.g["yourIndex"] = data["yourIndex"]
+                self.g["state"] = data["state"]
+                self.phase = "playing"
+            else:
+                self.take_update(ev, data)
+            self.drain()                      # act on the newest state only
+            self.guarded(self.live_turn)
+        elif ev == "placement:start" and self.g:
+            self.phase = "placement"
+            self.guarded(self.live_place, data)
+        elif ev == "draft:update" and self.g and data:
+            self.drop("left", "marathon draft: not played")
+        elif ev in ("player:joined", "player:left") and self.g and data:
+            self.g["players"] = data.get("players", self.g.get("players"))
+        elif ev == "lobby:player:updated" and self.g:
+            self.g["players"] = data if isinstance(data, list) else data.get("players", data)
+        elif ev == "lobby:config:update" and self.g:
+            self.g["cfg"] = data
+            why = config_ok(data)
+            if why and self.kind != "host":
+                self.mgr.refuse(self.g["sessionId"])
+                self.drop("left", f"lobby changed to {why}")
+        elif ev in ("game:over", "session:kicked"):
+            why = (data or {}).get("how") or (data or {}).get("reason") or ev
+            self.log.info("game ended: %s", why)
+            if self.g:
+                self.brain.on(None).forget(self.g.get("sessionId"))
+            if ev == "game:over" and self.g:
+                self.result = winners_of(data, self.g.get("state"), self.g.get("yourIndex"))
+                if self.result:
+                    self.log.info("winner: %s (%s)", " and ".join(self.result["winners"]),
+                                  "won" if self.result["won"] else "lost")
+            self.drop("over" if ev == "game:over" else "left", why)
+        elif ev == "connect" and not self.connected:
+            self.connected = True
+        elif ev == "connect" and self.g:
+            # reconnect: bind the seat again. socket.io's own reconnect can come back without
+            # the login (the server then refuses a bot seat): check the login and open a fresh
+            # socket with the current cookie; its connect event binds the seat again.
+            try:
+                self.call("session:connect", {"sessionId": self.g["sessionId"], "password": self.g["password"],
+                                              "clientId": self.g["clientId"]})
+                self.rebinds = 0
+            except RuntimeError as e:
+                self.rebinds += 1
+                if self.rebinds > 3:
+                    raise
+                self.log.warning("seat not bound again (%s): fresh connection", e)
+                self.acc.check_login()
+                self.reconnect()
+        elif ev == "turn:timeout":
+            self.log.warning("turn timed out")
+
+    def live_place(self, data):
+        g = self.g
+        me = g["lobbyIndex"]
+        if me not in [s["idx"] for s in data.get("queue", [])] and me not in data.get("queue", []):
+            return
+        seat = next(s for s in data["plan"]["seats"] if s["idx"] == me)
+        lobby = (g.get("players") or [])
+        ability = lobby[me].get("ability") if me < len(lobby) else None
+        player = {"civ": seat.get("civ"), "ability": ability if ability not in (None, "random") else "basis"}
+        o, cell = self.brain.on(None).place(data["plan"], me, player)
+        self.call("placement:action", {"o": o, "cell": cell})
+        self.log.info("placed start tile o=%s cell=%s", o, cell)
+
+    def game_of(self, args):
+        return (self.g or {}).get("sessionId")
+
+    def live_turn(self):
+        self.retry_at = 0.0
+        g = self.g
+        S, me = g["state"], g.get("yourIndex", -1)
+        if S.get("over") or me is None or me < 0 or S["cur"] != me:
+            return
+
+        def send(typ, params):
+            # live: the server acks, then broadcasts the new state (nothing on errors). The
+            # server also rebroadcasts the unchanged state every 15 s (sync loop), so wait for
+            # an update that differs from the state before the action.
+            before = fingerprint(self.g["state"])
+            self.call("action", {"type": typ, "params": params})
+            self.wait_event("state:update", changed_from=before)
+        if not self.play_turn(S, me, g["sessionId"], send, lambda: self.g and self.g["state"]):
+            self.retry_at = time.time() + self.RETRY
+
+    def take_update(self, ev, data):
+        if ev == "state:update" and self.g:
+            if self.newer(data["state"], self.g.get("state")):
+                self.g["state"] = data["state"]
+            return True
+        return False
+
+    def wait_event(self, kind, timeout=10, changed_from=None):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                ev, data = self.events.get(timeout=max(0.01, deadline - time.time()))
+            except queue.Empty:
+                break
+            if ev == kind and self.take_update(ev, data):
+                if changed_from is None or fingerprint(self.g["state"]) != changed_from:
+                    return
+                continue
+            if not self.take_update(ev, data):
+                self.stash.append((ev, data))
+        self.log.warning("no %s within %ss", kind, timeout)
+
+
+class Rundenspiele(Conn):
+    """All Rundenspiele on one socket: plays every turn that is due, and joins or hosts new
+    games as the mode says. The server keeps a socket in the room of the game it opened last
+    only, so a game gets its updates only while it is the open one; updates of another game
+    can still be on their way when a game is opened."""
+
+    def __init__(self, mgr):
+        super().__init__(mgr, "rundenspiele")
+        self.mine, self.open = [], []    # from the last GET /api/async
+        self.opened = None               # id of the Rundenspiel opened last on this socket
+        self.current = None              # id of the Rundenspiel played now
+        self.views = {}                  # id -> newest view
+        self.refused = {}                # id -> why the server refused us
+        self.last_poll = 0.0
+        self.host_retry = 0.0            # no new hosting attempt before this time
+        self.thread = threading.Thread(target=self.run, daemon=True, name="rundenspiele")
+
+    def run(self):
+        self.connect()
+        while True:
+            try:
+                ev, data = self.next_event(2)
+                self.handle(ev, data)
+            except queue.Empty:
+                pass
+            if time.time() - self.last_poll > 60:
+                self.guarded(self.poll)
+
+    def handle(self, ev, data):
+        if ev == "cmd:poll":
+            self.guarded(self.poll)
+        elif ev == "cmd:join":
+            self.guarded(self.join, data, True)
+            self.guarded(self.poll)
+        elif ev == "cmd:leave":
+            r = self.acc.post(f"/api/async/{data}/leave")
+            self.log.info("left Rundenspiel %s: %s", data, r.status_code)
+            self.guarded(self.poll)
+        elif ev == "cmd:reconnect":
+            self.guarded(self.reconnect)
+        elif ev == "connect":
+            # a new socket has no game opened: the poll opens the due ones again
+            self.opened = None
+            self.views = {}
+            self.guarded(self.poll)
+        elif ev == "async:update" and data:
+            self.accept(data)
+            gid = data.get("id")
+            if gid == self.opened:
+                self.guarded(self.turn, gid)
+            elif gid:                    # not in its room: no updates would follow the actions
+                self.guarded(self.open_game, gid)
+
+    def fit(self, s):
+        """(why, hard) for the open Rundenspiel `s`: hard = it can't be joined or played at
+        all, else only the join filters are against it. why None = fine."""
+        if s.get("engine") and s["engine"] not in (self.brain.on(None).version, "current"):
+            return f"engine {s['engine']}", True
+        cfg = s.get("config") or {}
+        seats = s.get("seats") or []
+        why = config_ok(cfg, len(seats)) or ("full" if not s.get("freeSeats") else None) \
+            or ("no player-bots" if self.acc.is_bot and not cfg.get("playerBots") else None)
+        if why:
+            return why, True
+        if s.get("id") in self.refused:
+            return self.refused[s["id"]], False
+        host = seats[cfg["startPlayer"]] if isinstance(cfg.get("startPlayer"), int) and cfg["startPlayer"] < len(seats) else {}
+        n = cfg.get("playerCount") or len(seats)
+        return join_filter(self.mgr.settings["join"], cfg, empires=n, ki=n - (cfg.get("humanCount") or n),
+                           host_is_bot=bool(host.get("botAccount")), live=False), False
+
+    def poll(self):
+        self.last_poll = time.time()
+        lst = self.acc.get("/api/async").json()
+        self.mine, self.open = lst.get("mine", []), lst.get("open", [])
+        st = self.mgr.settings
+        j = st["join"]
+        if j["on"] and j["async"]:
+            joined = sum(1 for s in self.mine if not s.get("isHost"))
+            for s in self.open:
+                if joined >= j["max_async"]:
+                    break
+                if not self.fit(s)[0] and self.join(s["id"]):
+                    joined += 1
+        if st["host"]["on"] and time.time() >= self.host_retry:
+            created = False
+            for setup, missing in self.missing_hosted():
+                for _ in range(missing):
+                    if not self.host(setup):
+                        break
+                    created = True
+            if created:
+                self.mine = self.acc.get("/api/async").json().get("mine", self.mine)
+        ids = {s.get("id") for s in self.mine}
+        self.views = {k: v for k, v in self.views.items() if k in ids}
+        due = [s for s in self.mine if s.get("yourTurn")]
+        if due:
+            self.log.info("due: %s", ", ".join(f"{s.get('joinCode')} ({s.get('status')}, round {s.get('round')})" for s in due))
+        for s in due:
+            self.guarded(self.open_game, s["id"])
+
+    def join(self, gid, picked=False):
+        r = self.acc.post(f"/api/async/{gid}/join", json={"civ": "random", "ability": "random"})
+        if r.ok and not r.json().get("error"):
+            self.log.info("joined Rundenspiel %s%s", gid, " (picked)" if picked else "")
+            return True
+        err = (r.json() if r.headers.get("content-type", "").startswith("application/json") else {}).get("error") or r.status_code
+        if r.status_code < 500:
+            self.refused[gid] = f"refused: {err}"    # e.g. no room for another player-bot
+        self.log.info("Rundenspiel %s refused us: %s", gid, err)
+        return False
+
+    def missing_hosted(self):
+        """[(setup, how many more to host)] for the Rundenspiel setups. Hosted games belong to
+        the first setup with their map, empires and humans that still has room."""
+        setups = [x for x in self.mgr.settings["host"]["setups"] if x["kind"] == "async" and x["count"] > 0]
+        have = {x["id"]: 0 for x in setups}
+        for g in self.mine:
+            if not g.get("isHost"):
+                continue
+            key = setup_key(g.get("config") or {})
+            for x in setups:
+                if setup_key(x) == key and have[x["id"]] < x["count"]:
+                    have[x["id"]] += 1
+                    break
+        return [(x, x["count"] - have[x["id"]]) for x in setups if have[x["id"]] < x["count"]]
+
+    def host(self, setup):
+        keys = ("mapKey", "playerCount", "kiCount", "difficulty", "civMode", "isPublic", "playerBotLimit", "ranked")
+        cfg = dict({k: setup.get(k) for k in keys}, **host_options(setup), playerBots=True)
+        cfg["ranked"] = bool(cfg["ranked"])
+        r = self.acc.post("/api/async", json={"config": cfg, "civ": "random", "ability": "random"})
+        body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        if not r.ok or body.get("error"):
+            self.host_retry = time.time() + 600
+            self.mgr.note = f"Rundenspiel not created: {body.get('error') or r.status_code}"
+            self.log.warning(self.mgr.note)
+            return False
+        self.log.info("hosting Rundenspiel %s (code %s)", body.get("id"), body.get("joinCode"))
+        return True
+
+    def game_of(self, args):
+        return args[0] if args else None
+
+    def open_game(self, gid):
+        res = self.call("async:open", {"id": gid})
+        self.opened = gid
+        self.accept(res["view"])
+        self.turn(gid)
+
+    def accept(self, view):
+        """Keep the newest view per game. Views without a state (setup, placement) follow each
+        other in order; a state never goes back (logSeq) and is never replaced by no state."""
+        old = (self.views.get(view.get("id")) or {}).get("state")
+        if not old or self.newer(view.get("state"), old):
+            self.views[view.get("id")] = view
+
+    def take_update(self, ev, data):
+        if ev == "async:update" and data and self.current == data.get("id"):
+            self.accept(data)
+            return True
+        return False
+
+    def turn(self, gid):
+        """Play game `gid` on its newest view; updates of other games wait in the stash."""
+        self.current = gid
+        try:
+            self.stash = [e for e in self.stash if not self.take_update(*e)]
+            self.drain()
+            self.act(gid)
+        finally:
+            self.current = None
+
+    def act(self, gid):
+        view = self.views.get(gid) or {}
+        brain = self.brain.on(view.get("engine"))
+        if view.get("status") == "placement" and view.get("placement") and not view["placement"].get("placed"):
+            pl = view["placement"]
+            slot = view["mySlot"]
+            seat = next(x for x in pl["plan"]["seats"] if x["idx"] == slot)
+            pp = (pl.get("players") or [{}] * (slot + 1))[slot] or {}
+            player = {"civ": seat.get("civ") or pp.get("civ"), "ability": pp.get("ability") or "basis"}
+            o, cell = brain.place(pl["plan"], slot, player)
+            self.call("async:place", {"id": gid, "o": o, "cell": cell})
+            self.log.info("%s: placed start tile", gid)
+            return
+        S, me = view.get("state"), view.get("myIndex", -1)
+        if view.get("status") != "playing" or not S or S.get("over") or me < 0 or S["cur"] != me or view.get("hold"):
+            return
+
+        def send(typ, params):
+            # Rundenspiele broadcast the new view before the ack: it is already queued
+            self.call("async:action", {"id": gid, "type": typ, "params": params})
+            self.drain()
+        if self.play_turn(S, me, gid, send, lambda: (self.views.get(gid) or {}).get("state"), brain):
+            self.log.info("%s: turn played (round %s)", gid, S.get("round"))
+
+
+class Matchmaker(Conn):
+    """Ranked matchmaking: in the queue while the mode is "match" and no match game runs."""
+
+    def __init__(self, mgr):
+        super().__init__(mgr, "matchmaking")
+        self.queued = False
+        self.waiting = None
+        self.thread = threading.Thread(target=self.run, daemon=True, name="matchmaking")
+
+    def run(self):
+        self.connect()
+        while True:
+            try:
+                ev, data = self.next_event(2)
+                self.handle(ev, data)
+            except queue.Empty:
+                pass
+            want = self.mgr.settings["match"] and not any(g.kind == "match" for g in self.mgr.active())
+            if want and not self.queued:
+                self.guarded(self.join_queue)
+            elif not want and self.queued:
+                self.guarded(self.leave_queue)
+
+    def join_queue(self):
+        res = self.call("match:join", {})
+        self.queued = True
+        self.log.info("%s", "match pending" if res.get("pending") else f"in the queue ({res.get('queued')} waiting)")
+
+    def leave_queue(self):
+        self.queued = False
+        self.call("match:leave", {})
+        self.log.info("left the queue")
+
+    def handle(self, ev, data):
+        if ev == "match:found":
+            self.log.info("match found: %s", ", ".join(p.get("name", "?") for p in data.get("players", [])))
+            self.call("match:accept", {"matchId": data["matchId"]})
+        elif ev == "match:ready":
+            self.mgr.start_live(match=data)
+            self.guarded(self.leave_queue)
+        elif ev == "match:cancelled":
+            self.log.info("match cancelled: %s", (data or {}).get("reason"))
+            if not (data or {}).get("requeued"):
+                self.queued = False
+        elif ev == "connect":
+            self.queued = False          # the queue entry belongs to the old socket
+        elif ev == "cmd:reconnect":
+            self.guarded(self.reconnect)
+
+
+class LogBuffer(logging.Handler):
+    def __init__(self, n=300):
+        super().__init__()
+        self.lines = collections.deque(maxlen=n)
+        self.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%H:%M:%S"))
+
+    def emit(self, record):
+        self.lines.append(self.format(record))
+
+
+class Manager:
+    """Settings, modes and all connections. tick() runs in the main thread."""
+
+    def __init__(self, acc: Account, brain: Brain, settings_path=None, settings=None):
+        self.acc, self.brain = acc, brain
+        self.path = Path(settings_path) if settings_path else None
+        saved = {}
+        if self.path and self.path.exists():
+            saved = json.loads(self.path.read_text(encoding="utf-8"))
+        self.settings = clean_settings(settings or saved)
+        self.lock = threading.RLock()
+        self.live: list[LiveGame] = []
+        self.refused = {}                # session id -> until when we don't join it again
+        self.note = ""
+        self.last_lobby_poll = self.last_host_try = self.last_auth_check = self.last_engine_check = 0.0
+        self.rs = self.mm = None
+        self.logs = LogBuffer()
+        log.addHandler(self.logs)
+
+    ENGINE_CHECK_EVERY = 300     # seconds between looks at the server's engine version
+
+    def check_engine(self):
+        """Play on the engine the server runs: after a deploy new games use the new rules (the
+        running Rundenspiele keep theirs). A version without a local copy keeps the old one."""
+        self.last_engine_check = time.time()
+        version = server_version(self.acc.url)
+        brain = self.brain
+        if not version or version == brain.current:
+            return
+        try:
+            brain.on(version)
+        except RuntimeError as e:
+            log.error("the server runs engine %s, staying on %s: %s", version, brain.current, e)
+            return
+        log.info("the server runs engine %s (was %s): new games use it", version, brain.current)
+        brain.current = version
+
+    def start(self):
+        """Log in and open the Rundenspiele and matchmaking connections."""
+        self.check_engine()
+        self.acc.login()
+        if not self.acc.is_bot:
+            self.settings["match"] = False
+        self.last_auth_check = time.time()
+        if self.acc.token or self.acc.user:
+            self.rs = Rundenspiele(self)
+            self.rs.thread.start()
+        if self.acc.is_bot:
+            self.mm = Matchmaker(self)
+            self.mm.thread.start()
+
+    def run(self):
+        self.start()
+        while True:
+            self.guarded_tick()
+            time.sleep(3)
+
+    def guarded_tick(self):
+        try:
+            self.tick()
+        except Exception:  # noqa: BLE001
+            log.exception("tick failed")
+
+    # ---------------------------------------------------------------- live games
+    def active(self):
+        with self.lock:
+            return [g for g in self.live if not g.done.is_set()]
+
+    def start_live(self, **kw):
+        g = LiveGame(self, **kw)
+        with self.lock:
+            self.live.append(g)
+            ended = [x for x in self.live if x.done.is_set()]
+            for x in ended[:-20]:        # keep the last 20 finished games for the panel
+                self.live.remove(x)
+        return g.start()
+
+    def live_ended(self, g):
+        if g.kind == "host" and g.phase == "failed":
+            self.note = g.note
+            self.last_host_try = time.time() + 60       # don't hammer the server
+
+    def refuse(self, session_id, minutes=30):
+        self.refused[session_id] = time.time() + minutes * 60
+
+    def lobby_fit(self, s):
+        """(why, hard) for the public lobby `s`: hard = it can't be joined, else only the join
+        filters are against it. why None = fine. The list shows only the map and the human
+        seats; the rest of the configuration is checked after joining (LiveGame.enter)."""
+        j = self.settings["join"]
+        if s.get("status") != "lobby":
+            return "running", True
+        if any(g.g and g.g.get("sessionId") == s.get("id") for g in self.active()):
+            return "joined", True
+        if s.get("playersCount", 0) >= s.get("maxPlayers", 0):
+            return "full", True
+        if str(s.get("mapKey")) not in MAP_GROUPS:
+            return f"map {s.get('mapKey')}", True
+        if self.acc.is_bot and not s.get("playerBots"):
+            return "no player-bots", True
+        if self.acc.is_bot and s.get("playerBotsFree") == 0:
+            return "no room for bots", True
+        if s.get("maxPlayers", 0) > MAX_PLAYERS:
+            return f"{s['maxPlayers']} seats", True
+        if self.refused.get(s.get("id"), 0) > time.time():
+            return "left before", False
+        if MAP_GROUPS[str(s.get("mapKey"))] not in j["maps"]:
+            return f"map {s.get('mapKey')}", False
+        if s.get("maxPlayers", 0) > j["max_empires"]:
+            return f"{s['maxPlayers']} seats", False
+        return None, False
+
+    def public_lobbies(self):
+        return self.acc.get("/api/public-sessions").json()
+
+    def tick(self):
+        now, st = time.time(), self.settings
+        if now - self.last_auth_check > 600:
+            self.last_auth_check = now
+            if self.acc.check_login():
+                for c in (self.rs, self.mm):
+                    if c:
+                        c.command("reconnect")
+        if now - self.last_engine_check > self.ENGINE_CHECK_EVERY:
+            self.check_engine()
+        active = self.active()
+        j, h = st["join"], st["host"]
+        joined = [g for g in active if g.kind == "join"]
+        if j["on"] and j["live"] and len(joined) < j["max_live"] and now - self.last_lobby_poll > 15:
+            self.last_lobby_poll = now
+            for s in self.public_lobbies():
+                if not self.lobby_fit(s)[0]:
+                    self.start_live(lobby=s)
+                    break
+        # hosted live games: per setup, so many open or running; lobbies nobody needs any
+        # more (hosting off, setup removed, fewer wanted) are closed
+        setups = {x["id"]: x for x in h["setups"] if x["kind"] == "live"}
+        for sid in {g.setup_id for g in active if g.kind == "host"} | set(setups):
+            mine = [g for g in active if g.kind == "host" and g.setup_id == sid]
+            want = setups[sid]["count"] if h["on"] and sid in setups else 0
+            waiting = [g for g in mine if g.phase in ("connecting", "lobby")]
+            for g in waiting[max(0, want - (len(mine) - len(waiting))):]:
+                g.leave("no longer hosted")
+            if len(mine) < want and now - self.last_host_try > 20:
+                self.last_host_try = now
+                self.start_live(host_cfg=dict(setups[sid]))
+
+    # ---------------------------------------------------------------- panel API
+    def status(self):
+        rs = self.rs
+        return {
+            "account": {"name": self.acc.name, "isBot": self.acc.is_bot, "url": self.acc.url},
+            "engine": self.brain.on(None).version, "agent": self.brain.spec,
+            "settings": self.settings, "note": self.note,
+            "live": [g.info() for g in reversed(self.live)],
+            "rundenspiele": [{"id": s.get("id"), "joinCode": s.get("joinCode"), "status": s.get("status"),
+                              "empires": (s.get("config") or {}).get("playerCount"),
+                              "ranked": bool((s.get("config") or {}).get("ranked")),
+                              "mode": mode_label(s.get("config") or {}),
+                              "isHost": s.get("isHost"), "round": s.get("round"), "yourTurn": s.get("yourTurn"),
+                              "waitingFor": s.get("waitingFor"), "mapKey": (s.get("config") or {}).get("mapKey"),
+                              "players": [x.get("name") or ("KI" if x.get("kind") == "ki" else "–") for x in s.get("seats") or []]}
+                             for s in (rs.mine if rs else [])],
+            "queued": bool(self.mm and self.mm.queued),
+            "log": list(self.logs.lines)[-80:],
+        }
+
+    def game_lists(self):
+        lobbies = []
+        for s in self.public_lobbies():
+            if s.get("status") != "lobby":
+                continue
+            why, hard = self.lobby_fit(s)
+            lobbies.append({"id": s.get("id"), "joinCode": s.get("joinCode"), "host": s.get("hostName"),
+                            "mapKey": s.get("mapKey"), "players": s.get("playersCount"), "seats": s.get("maxPlayers"),
+                            "playerBots": s.get("playerBots"), "why": why, "hard": hard})
+        games = []
+        if self.rs:
+            for s in self.acc.get("/api/async").json().get("open", []):
+                cfg = s.get("config") or {}
+                why, hard = self.rs.fit(s)
+                games.append({"id": s.get("id"), "joinCode": s.get("joinCode"), "mapKey": cfg.get("mapKey"),
+                              "mode": mode_label(cfg),
+                              "status": s.get("status"), "empires": cfg.get("playerCount"),
+                              "free": len(s.get("freeSeats") or []), "round": s.get("round"),
+                              "host": next((x.get("name") for x in s.get("seats") or [] if x.get("userId")), None),
+                              "playerBots": cfg.get("playerBots"), "why": why, "hard": hard})
+        return {"lobbies": lobbies, "rundenspiele": games}
+
+    def join(self, kind, gid):
+        if kind == "live":
+            s = next((x for x in self.public_lobbies() if x.get("id") == gid), None)
+            if not s:
+                raise ValueError("lobby not found")
+            why, hard = self.lobby_fit(s)
+            if hard:
+                raise ValueError(why)
+            self.refused.pop(gid, None)
+            self.start_live(lobby=s, picked=True)
+        elif kind == "async" and self.rs:
+            self.rs.refused.pop(gid, None)
+            self.rs.command("join", gid)
+        else:
+            raise ValueError("unknown game kind")
+
+    def leave(self, kind, gid):
+        if kind == "live":
+            g = next((x for x in self.active() if x.id == gid), None)
+            if not g:
+                raise ValueError("game not found")
+            g.leave("left by the panel")
+        elif kind == "async" and self.rs:
+            self.rs.command("leave", gid)
+        else:
+            raise ValueError("unknown game kind")
+
+    def update_settings(self, raw):
+        new = clean_settings(raw, self.settings)
+        if new["match"] and not self.acc.is_bot:
+            raise ValueError("matchmaking is for bot accounts only")
+        self.settings = new
+        if self.path:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(json.dumps(new, indent=2), encoding="utf-8")
+        log.info("settings saved (join %s, host %s, matchmaking %s)", *("on" if x else "off" for x in
+                 (new["join"]["on"], new["host"]["on"], new["match"])))
+        if self.rs:
+            self.rs.command("poll")
+        return new
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", default="online.env", help="KEY=VALUE file with HOCHCIV_URL and HOCHCIV_TOKEN")
+    ap.add_argument("--bot", default="rusher", help="bots/<name>")
+    ap.add_argument("--opt", nargs="*", default=[], help="bot options key=value (constructor kwargs)")
+    ap.add_argument("--settings", default="runs/online-settings.json", help="where the panel settings are saved")
+    ap.add_argument("--port", type=int, default=8780, help="control board on http://127.0.0.1:PORT")
+    ap.add_argument("--no-panel", action="store_true", help="run with the saved settings, no control board")
+    ap.add_argument("--open", action="store_true", help="open the control board in the browser")
+    args = ap.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    env = dict(read_env(args.config)) if Path(args.config).exists() else {}
+    for k in ("HOCHCIV_URL", "HOCHCIV_TOKEN", "HOCHCIV_NAME"):
+        if os.environ.get(k):
+            env[k] = os.environ[k]
+    if not env.get("HOCHCIV_URL") or not env.get("HOCHCIV_TOKEN"):
+        raise SystemExit(f"HOCHCIV_URL and HOCHCIV_TOKEN needed (in {args.config} or the environment)")
+    # the engine the server runs; without a local copy the default one (check_engine tries again)
+    version, engine_dir = server_version(env["HOCHCIV_URL"]), None
+    try:
+        engine_dir = version and engine_dir_of(version)
+    except RuntimeError as e:
+        log.error("%s, starting on the default engine", e)
+    brain = Brain(args.bot, parse_opts(args.opt), engine_dir=engine_dir)
+    log.info("engine %s, bot %s", brain.version, brain.spec)
+    acc = Account(env["HOCHCIV_URL"], token=env["HOCHCIV_TOKEN"], name=env.get("HOCHCIV_NAME"))
+    mgr = Manager(acc, brain, args.settings)
+    if not args.no_panel:
+        from online.panel import serve
+        serve(mgr, args.port, open_browser=args.open)
+    try:
+        mgr.run()
+    finally:
+        brain.close()
+
+
+if __name__ == "__main__":
+    threading.current_thread().name = "main"
+    main()

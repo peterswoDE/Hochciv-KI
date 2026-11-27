@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HochCiv Bot Control</title>
+<style>
+:root {
+  --bg: #f6f3ec; --card: #fffdf8; --ink: #2b2620; --muted: #7a7064; --line: #e4dccd; --field: #fbf8f2;
+  --accent: #8a5a1f; --accent-ink: #fff; --ok: #2f7d4f; --warn: #a3631a; --bad: #a33a2a; --chip: #efe7d8;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #1b1916; --card: #24211d; --ink: #ece6dc; --muted: #a39a8c; --line: #3a352e; --field: #1f1d19;
+          --accent: #d39a52; --accent-ink: #1b1916; --ok: #6cc08c; --warn: #e0a55a; --bad: #e07a68; --chip: #322e28; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, "Segoe UI", sans-serif; }
+header { display: flex; align-items: center; gap: 10px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--card); flex-wrap: wrap; }
+header h1 { font-size: 17px; margin: 0 6px 0 0; }
+.chip { background: var(--chip); border-radius: 999px; padding: 2px 10px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.chip.on { color: var(--ok); }
+.chip.bot { color: var(--ok); }
+.spacer { flex: 1; }
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 16px; max-width: 1400px; margin: 0 auto; padding: 16px 20px 40px; align-items: start; }
+.col { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+aside { position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow: auto; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+.card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 7px; padding: 5px 12px; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button.small { padding: 2px 9px; font-size: 12px; }
+button.icon { padding: 0 7px; border-color: transparent; color: var(--muted); }
+.note { color: var(--warn); font-size: 13px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; color: var(--muted); font-weight: 600; }
+td.r, th.r { text-align: right; }
+.empty { color: var(--muted); padding: 8px 0; }
+.why { color: var(--muted); font-size: 12px; }
+.why.hard { color: var(--bad); }
+.ph { font-size: 12px; border-radius: 5px; padding: 1px 7px; background: var(--chip); white-space: nowrap; }
+.ph.playing, .ph.placement, .ph.draft { color: var(--ok); }
+.ph.lobby, .ph.connecting, .ph.setup { color: var(--warn); }
+.ph.failed { color: var(--bad); }
+.turn { color: var(--ok); font-weight: 600; }
+.res { font-weight: 600; }
+.res.won { color: var(--ok); }
+.res.lost { color: var(--bad); }
+.tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+.tabs button.on { border-color: var(--accent); color: var(--accent); }
+pre.log { margin: 0; max-height: 260px; overflow: auto; font: 12px/1.5 ui-monospace, Consolas, monospace; color: var(--muted); white-space: pre-wrap; }
+.scroll { overflow-x: auto; }
+/* settings */
+.sec { border-top: 1px solid var(--line); padding: 12px 0 4px; }
+.sec:first-of-type { border-top: 0; padding-top: 0; }
+.sec-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.sec-head b { font-size: 14px; }
+.sec-head .why { flex: 1; }
+.sec.off .body { opacity: .5; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 6px 0; }
+.row > label:first-child, .row > span:first-child { flex: 1; }
+input[type=number] { width: 58px; }
+select, input[type=number], textarea { font: inherit; color: var(--ink); background: var(--field); border: 1px solid var(--line); border-radius: 6px; padding: 2px 5px; }
+textarea { width: 100%; min-height: 54px; resize: vertical; }
+.checks { display: flex; flex-wrap: wrap; gap: 3px 14px; margin: 4px 0 8px; }
+.checks label { white-space: nowrap; }
+.inline { display: inline-flex; align-items: center; gap: 6px; }
+/* switch */
+.switch { position: relative; width: 36px; height: 20px; flex: none; }
+.switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+.switch span { position: absolute; inset: 0; background: var(--line); border-radius: 999px; transition: .15s; cursor: pointer; }
+.switch span::after { content: ""; position: absolute; left: 3px; top: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--card); transition: .15s; }
+.switch input:checked + span { background: var(--accent); }
+.switch input:checked + span::after { transform: translateX(16px); }
+.switch input:disabled + span { opacity: .4; cursor: default; }
+.switch input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* host setups */
+.setup { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 8px 0; background: var(--field); }
+.setup .top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.setup .top select { max-width: 130px; }
+.setup .count { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; }
+.setup details { margin-top: 4px; }
+.setup summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.setup .grid { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: center; margin-top: 6px; font-size: 13px; }
+.adds { display: flex; gap: 6px; margin: 6px 0 10px; }
+.saved { font-size: 12px; color: var(--muted); }
+.saved.err { color: var(--bad); }
+@media (max-width: 980px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  aside { position: static; max-height: none; order: -1; }
+}
+@media (max-width: 600px) {
+  header, .layout { padding-left: 16px; padding-right: 16px; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>HochCiv-HardcodedBots</h1>
+  <span class="chip" id="acc">…</span>
+  <span class="chip" id="srv"></span>
+  <span class="chip" id="eng"></span>
+  <span class="spacer"></span>
+  <span class="chip" id="st-join">join off</span>
+  <span class="chip" id="st-host">host off</span>
+  <span class="chip" id="st-match">matchmaking off</span>
+</header>
+
+<div class="layout">
+  <div class="col">
+    <section class="card">
+      <h2>Running games <span class="spacer"></span><span class="note" id="tally"></span> <span class="note" id="note"></span></h2>
+      <div class="scroll"><table id="live"></table></div>
+      <div class="scroll" style="margin-top:10px"><table id="mine"></table></div>
+    </section>
+
+    <section class="card">
+      <h2>Game list <span class="spacer"></span><button class="small" id="refresh">Refresh</button></h2>
+      <div class="tabs">
+        <button class="small on" data-tab="lobbies">Live lobbies</button>
+        <button class="small" data-tab="rundenspiele">Rundenspiele</button>
+      </div>
+      <div class="scroll"><table id="list"></table></div>
+      <div class="why" style="margin-top:6px">Join works for every game the bot can play; grey reasons are only your join filters, red ones block joining.</div>
+    </section>
+
+    <section class="card">
+      <h2>Log</h2>
+      <pre class="log" id="log"></pre>
+    </section>
+  </div>
+
+  <aside class="card" id="settings">
+    <h2>Settings <span class="spacer"></span><span class="saved" id="saved"></span></h2>
+    <div id="form">Loading…</div>
+  </aside>
+</div>
+
+<script>
+const TOKEN = "__PANEL_TOKEN__";
+const MAPS = { "0": "Originalkarte", "1": "Originalkarte", original: "Originalkarte", gross: "Große Karte",
+               random: "Plättchenkarte", plaettchen: "Plättchenkarte", eigene: "Eigene Karte", marathon: "Marathon" };
+const HOST_MAPS = { live: ["random", "0", "gross"], async: ["plaettchen", "0", "gross"] };
+const MAP_GROUPS = [["tiles", "Plättchenkarte"], ["original", "Originalkarte"], ["gross", "Große Karte"], ["custom", "Eigene Karte"]];
+const EVENTS = [["off", "no events"], ["easy", "easy"], ["hard", "hard"]];
+const MAX_EMPIRES = 8;
+// empires a hosted game may have on a map (mapLimits in the engine)
+const hostEmpires = k => k === "marathon" ? [4, 4] : k === "0" || k === "gross" ? [2, 4] : [2, MAX_EMPIRES];
+const TIMERS = [[0, "off"], [60, "1 min"], [120, "2 min"], [180, "3 min"], [300, "5 min"], [600, "10 min"]];
+let S = null, cfg = null, tab = "lobbies", lists = null, saveTimer = null, dirty = false;
+
+const $ = id => document.getElementById(id);
+const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const mapName = k => MAPS[k] || k || "–";
+const modeLine = g => g.mode ? `<div class="why">${esc(g.mode)}</div>` : "";
+const opts = (list, cur) => list.map(([v, t]) => `<option value="${esc(v)}" ${String(v) === String(cur ?? "") ? "selected" : ""}>${esc(t)}</option>`).join("");
+const range = (a, b) => Array.from({ length: Math.max(0, b - a + 1) }, (_, i) => [a + i, String(a + i)]);
+
+async function api(path, body) {
+  const r = await fetch(path, { method: body ? "POST" : "GET", headers: { "X-Panel-Token": TOKEN, "Content-Type": "application/json" },
+                                body: body ? JSON.stringify(body) : undefined });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.status);
+  return j;
+}
+function flash(msg) { $("note").textContent = msg; }
+
+// ---------------------------------------------------------------- settings (always visible, saved on change)
+const sw = (path, on, disabled) => `<label class="switch"><input type="checkbox" data-k="${path}" ${on ? "checked" : ""} ${disabled ? "disabled" : ""}><span></span></label>`;
+const cb = (path, on, text) => `<label class="inline"><input type="checkbox" data-k="${path}" ${on ? "checked" : ""}> ${text}</label>`;
+const num = (path, v, lo, hi) => `<input type="number" data-k="${path}" value="${v}" min="${lo}" max="${hi}">`;
+
+function setupHtml(x, i) {
+  const live = x.kind === "live";
+  const f = (field, inner) => `<select data-s="${i}" data-f="${field}">${inner}</select>`;
+  return `<div class="setup">
+    <div class="top">
+      ${f("kind", opts([["live", "Live lobby"], ["async", "Rundenspiel"]], x.kind))}
+      ${f("mapKey", opts(HOST_MAPS[x.kind].map(k => [k, MAPS[k]]), x.mapKey))}
+      ${f("playerCount", opts(range(...hostEmpires(x.mapKey)).map(([v]) => [v, v + " empires"]), x.playerCount))}
+      <span class="count">×<input type="number" data-s="${i}" data-f="count" value="${x.count}" min="0" max="${live ? 8 : 30}"></span>
+      <button class="icon" data-del="${i}" title="Remove">✕</button>
+    </div>
+    <details ${x._open ? "open" : ""} data-det="${i}"><summary>${esc(setupLine(x))}</summary>
+      <div class="grid">
+        <span>KI seats</span>${f("kiCount", opts(range(0, x.playerCount - 2), x.kiCount))}
+        <span>Wonders</span><input type="checkbox" data-s="${i}" data-f="wonders" ${x.wonders ? "checked" : ""}>
+        <span>Events</span>${f("events", opts(EVENTS, x.events))}
+        ${x.mapKey !== "marathon" ? `<span>Experimental nations <span class="why">(not ranked)</span></span><input type="checkbox" data-s="${i}" data-f="expCivs" ${x.expCivs ? "checked" : ""}>` : ""}
+        <span>🔥 Ranked <span class="why">(MMR counts, KI on Schwer)</span></span><input type="checkbox" data-s="${i}" data-f="ranked" ${x.ranked ? "checked" : ""}>
+        <span>KI level</span><select data-s="${i}" data-f="difficulty" ${x.ranked ? "disabled" : ""}>${opts([["leicht", "Leicht"], ["mittel", "Mittel"], ["schwer", "Schwer"]], x.difficulty)}</select>
+        ${live ? `<span>Turn timer</span>${f("turnTime", opts(TIMERS, x.turnTime))}
+                  <span>Random nations for everyone</span><input type="checkbox" data-s="${i}" data-f="randomCivs" ${x.randomCivs ? "checked" : ""}>`
+               : `<span>Nations</span>${f("civMode", opts([["random", "dealt at random"], ["fixed", "chosen"]], x.civMode))}`}
+        <span>Other player-bots</span>${f("playerBotLimit", opts([["", "no limit"], ...range(1, 3)], x.playerBotLimit))}
+        <span>Public</span><input type="checkbox" data-s="${i}" data-f="isPublic" ${x.isPublic ? "checked" : ""}>
+      </div>
+    </details>
+  </div>`;
+}
+function setupLine(x) {
+  const bits = x.ranked ? ["🔥 ranked"] : [];
+  bits.push(`${x.kiCount} KI (${x.difficulty})`);
+  if (x.wonders) bits.push("wonders");
+  if (x.events && x.events !== "off") bits.push(`events ${x.events}`);
+  if (x.expCivs && !x.ranked && x.mapKey !== "marathon") bits.push("exp. nations");
+  if (x.kind === "live") bits.push(x.turnTime ? `timer ${x.turnTime / 60} min` : "no timer");
+  else bits.push(x.civMode === "random" ? "random nations" : "chosen nations");
+  bits.push(x.isPublic ? "public" : "private");
+  return bits.join(" · ");
+}
+
+function renderSettings() {
+  const j = cfg.join, h = cfg.host, isBot = S.account.isBot;
+  $("form").innerHTML = `
+  <div class="sec ${j.on ? "" : "off"}">
+    <div class="sec-head"><b>Join games</b><span class="why">public games of others</span>${sw("join.on", j.on)}</div>
+    <div class="body">
+      <div class="row"><label>${cb("join.live", j.live, "Live games")}</label><span class="why">at once</span>${num("join.max_live", j.max_live, 0, 8)}</div>
+      <div class="row"><label>${cb("join.async", j.async, "Rundenspiele")}</label><span class="why">at once</span>${num("join.max_async", j.max_async, 0, 30)}</div>
+      <div class="why" style="margin-top:8px">Maps</div>
+      <div class="checks">${MAP_GROUPS.map(([k, t]) => `<label><input type="checkbox" data-map="${k}" ${j.maps.includes(k) ? "checked" : ""}> ${t}</label>`).join("")}</div>
+      <div class="row"><span>Empires</span><select data-k="join.min_empires">${opts(range(2, MAX_EMPIRES), j.min_empires)}</select> – <select data-k="join.max_empires">${opts(range(2, MAX_EMPIRES), j.max_empires)}</select></div>
+      <div class="row">${cb("join.wonders", j.wonders, "Games with wonders")}</div>
+      <div class="row">${cb("join.exp_civs", j.exp_civs, "Games with experimental nations")}</div>
+      <div class="why">Events</div>
+      <div class="checks">${EVENTS.map(([k, t]) => `<label><input type="checkbox" data-ev="${k}" ${j.events.includes(k) ? "checked" : ""}> ${t}</label>`).join("")}</div>
+      <div class="row"><span>Ranked</span><select data-k="join.ranked">${opts([["any", "any"], ["unranked", "unranked only"], ["ranked", "ranked only"]], j.ranked)}</select></div>
+      <div class="row">${cb("join.ki", j.ki, "Games with KI seats")}</div>
+      <div class="row">${cb("join.bot_hosts", j.bot_hosts, "Games hosted by other bots")}</div>
+      <div class="row">${cb("join.timer", j.timer, "Live: only with a turn timer")}</div>
+    </div>
+  </div>
+  <div class="sec ${h.on ? "" : "off"}">
+    <div class="sec-head"><b>Host games</b><span class="why">each setup kept open × times</span>${sw("host.on", h.on)}</div>
+    <div class="body">
+      ${h.setups.map(setupHtml).join("") || `<div class="empty">No setups.</div>`}
+      <div class="adds"><button class="small" data-add="live">+ Live lobby</button><button class="small" data-add="async">+ Rundenspiel</button></div>
+      <div class="row"><span>Live: start after</span>${num("host.start_after", h.start_after, 0, 120)}<span class="why">min with ≥</span>${num("host.min_players", h.min_players, 2, MAX_EMPIRES)}<span class="why">players</span></div>
+      <div class="why">A full lobby starts at once; free seats at the start are played by the KI.</div>
+    </div>
+  </div>
+  <div class="sec ${cfg.match ? "" : "off"}">
+    <div class="sec-head"><b>Matchmaking</b><span class="why">${isBot ? "ranked queue, one game at a time" : "needs a bot account"}</span>${sw("match", cfg.match, !isBot)}</div>
+  </div>
+  <div class="sec">
+    <div class="sec-head"><b>Chat greeting</b><span class="why">sent on entering a live lobby; empty = none</span></div>
+    <textarea data-k="greeting" maxlength="300">${esc(cfg.greeting)}</textarea>
+  </div>`;
+}
+
+function setPath(path, v) {
+  const keys = path.split("."), last = keys.pop();
+  keys.reduce((o, k) => o[k], cfg)[last] = v;
+}
+function changed(rerender) {
+  dirty = true;
+  $("saved").textContent = "saving…"; $("saved").className = "saved";
+  if (rerender) renderSettings();
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(save, 500);
+}
+async function save() {
+  try {
+    const out = JSON.parse(JSON.stringify(cfg));
+    out.host.setups.forEach(x => delete x._open);
+    const res = await api("/api/settings", { settings: out });
+    const open = new Set(cfg.host.setups.filter(x => x._open).map(x => x.id));
+    cfg = res.settings; dirty = false;
+    cfg.host.setups.forEach(x => { if (open.has(x.id)) x._open = true; });
+    S.settings = res.settings;
+    const focus = document.activeElement && $("form").contains(document.activeElement) && document.activeElement.type !== "checkbox";
+    if (!focus) renderSettings();
+    renderChips();
+    $("saved").textContent = "saved ✓";
+    refreshLists();
+  } catch (e) { $("saved").textContent = "not saved: " + e.message; $("saved").className = "saved err"; }
+}
+
+$("form").addEventListener("change", e => {
+  const el = e.target;
+  const key = (el.dataset.k || el.dataset.f || "").split(".").pop();
+  const numeric = /^(count|playerCount|kiCount|turnTime|max_live|max_async|min_empires|max_empires|start_after|min_players)$/.test(key);
+  const val = el.type === "checkbox" ? el.checked : numeric && el.value !== "" ? +el.value : el.value;
+  if (el.dataset.k) { setPath(el.dataset.k, val); changed(el.dataset.k.endsWith(".on") || el.dataset.k === "match"); }
+  else if (el.dataset.map) {
+    cfg.join.maps = [...$("form").querySelectorAll("[data-map]:checked")].map(x => x.dataset.map); changed(false);
+  } else if (el.dataset.ev) {
+    cfg.join.events = [...$("form").querySelectorAll("[data-ev]:checked")].map(x => x.dataset.ev); changed(false);
+  } else if (el.dataset.s !== undefined) {
+    const x = cfg.host.setups[+el.dataset.s], f = el.dataset.f;
+    x[f] = f === "playerBotLimit" ? (el.value === "" ? null : +el.value) : val;
+    if (f === "kind") x.mapKey = HOST_MAPS[x.kind][0];
+    if (f === "kind" || f === "mapKey") {
+      const [lo, hi] = hostEmpires(x.mapKey);
+      x.playerCount = Math.max(lo, Math.min(hi, x.playerCount));
+    }
+    if (f === "kind" || f === "mapKey" || f === "playerCount") x.kiCount = Math.min(x.kiCount, x.playerCount - 2);
+    if (f === "ranked" && x.ranked) x.difficulty = "schwer";
+    changed(["kind", "mapKey", "playerCount", "kiCount", "difficulty", "turnTime", "civMode", "isPublic", "ranked", "wonders", "events", "expCivs"].includes(f));
+  }
+});
+$("form").addEventListener("toggle", e => {
+  const d = e.target.closest("details[data-det]");
+  if (d) cfg.host.setups[+d.dataset.det]._open = d.open;
+}, true);
+
+// ---------------------------------------------------------------- status
+function renderChips() {
+  const st = S.settings, j = st.join, h = st.host;
+  const nLive = h.setups.filter(x => x.kind === "live").reduce((a, x) => a + x.count, 0);
+  const nAsync = h.setups.filter(x => x.kind === "async").reduce((a, x) => a + x.count, 0);
+  const chip = (id, on, text) => { $(id).textContent = text; $(id).className = "chip" + (on ? " on" : ""); };
+  chip("st-join", j.on, j.on ? `joining ≤${j.live ? j.max_live : 0} live · ≤${j.async ? j.max_async : 0} Rundenspiele` : "join off");
+  chip("st-host", h.on, h.on ? `hosting ${nLive} live · ${nAsync} Rundenspiele` : "host off");
+  chip("st-match", st.match, st.match ? (S.queued ? "matchmaking: in queue" : "matchmaking on") : "matchmaking off");
+}
+
+function resultLine(r) {
+  if (!r) return "";
+  return ` <span class="res ${r.won ? "won" : "lost"}">${r.won ? (r.shared ? "won (shared)" : "won") : "lost"}</span>` +
+    `<div class="why">🏆 ${esc(r.winners.join(" and "))}</div>`;
+}
+
+function renderRunning() {
+  const live = S.live;
+  const done = live.filter(g => g.result);
+  $("tally").textContent = done.length
+    ? `Last ${done.length} finished: ${done.filter(g => g.result.won).length} won, ${done.filter(g => !g.result.won).length} lost`
+    : "";
+  $("live").innerHTML = live.length ? `<tr><th>Live game</th><th>Map</th><th>Players</th><th>Status</th><th class="r">Round</th><th></th></tr>` +
+    live.map(g => {
+      const how = { host: "hosted", join: g.picked ? "picked" : "joined", match: "matchmaking" }[g.kind];
+      const active = !["over", "left", "failed"].includes(g.phase);
+      return `<tr><td>${esc(g.joinCode || g.id)} <span class="why">${how}</span></td><td>${esc(mapName(g.mapKey))}${g.empires ? ` · ${g.empires}` : ""}${g.ranked ? " 🔥" : ""}${modeLine(g)}</td>
+        <td>${esc(g.players.join(", "))}</td>
+        <td><span class="ph ${esc(g.phase)}">${esc(g.phase)}</span> ${g.myTurn ? '<span class="turn">its turn</span>' : ""}${resultLine(g.result)}<div class="why">${esc(g.note)}</div></td>
+        <td class="r">${g.round ?? ""}</td>
+        <td class="r">${active ? `<button class="small" data-leave="live" data-id="${esc(g.id)}" data-running="${g.phase !== "lobby" && g.phase !== "connecting"}">Leave</button>` : ""}</td></tr>`;
+    }).join("") : `<tr><td class="empty">No live games.</td></tr>`;
+  const mine = S.rundenspiele;
+  $("mine").innerHTML = mine.length ? `<tr><th>Rundenspiel</th><th>Map</th><th>Players</th><th>Status</th><th class="r">Round</th><th></th></tr>` +
+    mine.map(g => `<tr><td>${esc(g.joinCode)} <span class="why">${g.isHost ? "hosted" : "joined"}</span></td><td>${esc(mapName(g.mapKey))}${g.empires ? ` · ${g.empires}` : ""}${g.ranked ? " 🔥" : ""}${modeLine(g)}</td>
+      <td>${esc(g.players.join(", "))}</td>
+      <td><span class="ph ${esc(g.status)}">${esc(g.status)}</span> ${g.yourTurn ? '<span class="turn">its turn</span>' : `<span class="why">${esc(g.waitingFor || "")}</span>`}</td>
+      <td class="r">${g.round || ""}</td>
+      <td class="r"><button class="small" data-leave="async" data-id="${esc(g.id)}" data-running="${g.status === "playing"}">Leave</button></td></tr>`).join("")
+    : `<tr><td class="empty">No Rundenspiele.</td></tr>`;
+}
+
+function renderList() {
+  if (!lists) { $("list").innerHTML = `<tr><td class="empty">Loading…</td></tr>`; return; }
+  const rows = lists[tab];
+  if (!rows.length) { $("list").innerHTML = `<tr><td class="empty">No open ${tab === "lobbies" ? "public lobbies" : "Rundenspiele"}.</td></tr>`; return; }
+  const kind = tab === "lobbies" ? "live" : "async";
+  const head = `<tr><th>Code</th><th>Host</th><th>Map</th><th class="r">${tab === "lobbies" ? "Seats" : "Empires"}</th><th>Bots</th><th></th></tr>`;
+  $("list").innerHTML = head + rows.map(g => {
+    const seats = tab === "lobbies" ? `${g.players}/${g.seats}` : `${g.empires ?? "?"} (${g.free} free)`;
+    return `<tr><td>${esc(g.joinCode)}</td><td>${esc(g.host || "–")}</td><td>${esc(mapName(g.mapKey))}${modeLine(g)}</td><td class="r">${esc(seats)}</td>
+      <td>${g.playerBots ? "allowed" : '<span class="why">off</span>'}</td>
+      <td class="r">${g.hard ? "" : `<button class="small primary" data-join="${kind}" data-id="${esc(g.id)}">Join</button>`}
+        <div class="why ${g.hard ? "hard" : ""}">${esc(g.why || "")}</div></td></tr>`;
+  }).join("");
+}
+
+async function refreshStatus() {
+  try {
+    S = await api("/api/status");
+    $("acc").textContent = (S.account.isBot ? "🤖 " : "") + S.account.name + (S.account.isBot ? " · bot account" : " · regular account");
+    $("acc").className = "chip" + (S.account.isBot ? " bot" : "");
+    $("srv").textContent = S.account.url.replace(/^https?:\/\//, "");
+    $("eng").textContent = `engine ${S.engine} · bot ${S.agent}`;
+    if (!cfg) { cfg = JSON.parse(JSON.stringify(S.settings)); renderSettings(); }
+    renderChips(); renderRunning();
+    if (S.note && !$("note").textContent) flash(S.note);
+    const lg = $("log"), atEnd = lg.scrollTop + lg.clientHeight >= lg.scrollHeight - 4;
+    lg.textContent = S.log.join("\n");
+    if (atEnd) lg.scrollTop = lg.scrollHeight;
+  } catch (e) { flash("Panel: " + e.message); }
+}
+async function refreshLists() {
+  try { lists = await api("/api/games"); renderList(); } catch (e) { flash("Game list: " + e.message); }
+}
+
+document.addEventListener("click", async e => {
+  const t = e.target.closest("button");
+  if (!t) return;
+  try {
+    if (t.dataset.add) {
+      const live = t.dataset.add === "live";
+      cfg.host.setups.push({ id: Math.random().toString(16).slice(2, 8), kind: t.dataset.add, count: 1, mapKey: HOST_MAPS[t.dataset.add][0],
+                             playerCount: 2, kiCount: 0, difficulty: "schwer", turnTime: 180, randomCivs: false, civMode: "random",
+                             isPublic: true, playerBotLimit: null, ranked: false, wonders: false, events: "off", expCivs: false, _open: true });
+      changed(true);
+    } else if (t.dataset.del !== undefined) {
+      cfg.host.setups.splice(+t.dataset.del, 1); changed(true);
+    } else if (t.dataset.join) {
+      t.disabled = true;
+      await api("/api/join", { kind: t.dataset.join, id: t.dataset.id });
+      flash("Joining…"); setTimeout(() => { flash(""); refreshStatus(); refreshLists(); }, 1500);
+    } else if (t.dataset.leave) {
+      if (t.dataset.running === "true" && !confirm("The game is running – leave it anyway? (the KI takes over the seat)")) return;
+      await api("/api/leave", { kind: t.dataset.leave, id: t.dataset.id });
+      setTimeout(refreshStatus, 1000);
+    } else if (t.dataset.tab) {
+      tab = t.dataset.tab;
+      document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b === t));
+      renderList();
+    } else if (t.id === "refresh") {
+      lists = null; renderList(); refreshLists();
+    }
+  } catch (err) { flash(err.message); t.disabled = false; }
+});
+
+refreshStatus().then(refreshLists);
+setInterval(refreshStatus, 2000);
+setInterval(() => { if (!document.hidden) refreshLists(); }, 20000);
+</script>
+</body>
+</html>

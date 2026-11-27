@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+runs/
+*.log
+# credentials: bot tokens live only in local env files
+*.env
+.env*
+online*.env
+*token*
