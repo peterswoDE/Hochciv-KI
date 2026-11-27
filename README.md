@@ -2,6 +2,11 @@
 
 Neural-network AI for HochCiv (Python + PyTorch). See [PLAN.md](PLAN.md).
 
+This repo holds the code, the released models (`checkpoints/v*.pt`, each run's `best.pt`) and the
+online bots (`deploy/`). Training runs and their data (snapshots, `latest.pt`, BC data, eval logs)
+live in `../Hochciv-NeuralNet` (not a repo; its `nn.ps1` runs the modules here). Copy only the
+models you want to keep back into `checkpoints/`.
+
 ## Setup (Windows, cmd.exe)
 
 ```
